@@ -253,8 +253,16 @@ class AcmeManager(object):
         self.updated_services = set()
         self.hooks = collections.OrderedDict()
 
+        self._log_file = None
         self.config = {'settings': {'color_output': True}}
         self.config, self.config_file_path = self._load_config(self.args.config_path, ('.', os.path.join('/etc', self.script_name), self.script_dir))
+        if (self._directory('log') and self._file_name('log') and self._setting('log_level')):
+            log_file_path = self._file_path('log', self.script_name)
+            try:
+                self._log_file = self._open_file(log_file_path, mode='a+', chmod=0o640, warn=False)
+            except Exception as e:
+                print('Unable to open log file {}: '.format(log_file_path), e, file=sys.stderr)
+
         self._key_types = ('rsa', 'ecdsa')
         self._config_defaults = {
             'settings': {
@@ -463,13 +471,11 @@ class AcmeManager(object):
         raise AcmeError(message)
 
     def _log(self, *args):
-        if (hasattr(self, 'config') and self._directory('log') and self._file_name('log') and self._setting('log_level')):
-            log_file_path = self._file_path('log', self.script_name)
-            try:
-                with self._open_file(log_file_path, mode='a+', chmod=0o640, warn=False) as log_file:
-                    log_file.write(self._message(*args))
-            except Exception:
-                sys.stderr.write('Unable to write to log file ' + log_file_path + '\n')
+        try:
+            if self._log_file:
+                self._log_file.write(self._message(*args))
+        except Exception as e:
+            print('Unable to write to log file: ', e, file=sys.stderr)
 
     def _makedir(self, dir_path, chmod=None, warn=True):
         if (not os.path.isdir(dir_path)):
@@ -2943,6 +2949,12 @@ class AcmeManager(object):
                 self.verify_certificate_installation(self.args.private_key_names)
             self.disconnect_client()
         finally:
+            if self._log_file:
+                # noinspection PyBroadException
+                try:
+                    self._log_file.close()
+                except Exception:
+                    pass
             os.remove(pid_file_path)
 
 
