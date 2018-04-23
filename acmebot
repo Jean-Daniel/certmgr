@@ -395,7 +395,7 @@ class AcmeManager(object):
             }
         }
 
-    def _load_config(self, file_path, search_paths=[]):
+    def _load_config(self, file_path, search_paths=()):
         search_paths = [''] if (os.path.isabs(file_path)) else search_paths
         for search_path in search_paths:
             config_file_path = os.path.join(search_path, file_path)
@@ -560,7 +560,7 @@ class AcmeManager(object):
                     os.rename(archived_file_path, original_file_path)
             raise error
 
-    def _get_list(self, config, key, default=[]):
+    def _get_list(self, config, key, default=None):
         value = config.get(key, default)
         return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (value is None) else [value]
 
@@ -901,7 +901,7 @@ class AcmeManager(object):
         return KeyData(None, None)
 
     def save_private_key(self, file_type, file_name, key_type, private_key, key_cipher_data,
-                         timestamp=None, certificate=None, chain=[], dhparam_pem=None, ecparam_pem=None):
+                         timestamp=None, certificate=None, chain=None, dhparam_pem=None, ecparam_pem=None):
         with FileTransaction(file_type, self._file_path(file_type, file_name, key_type), chmod=0o640, timestamp=timestamp) as transaction:
             if (private_key):
                 if (key_cipher_data and not key_cipher_data.forced):
@@ -1007,7 +1007,7 @@ class AcmeManager(object):
             root_certificates[key_type] = self.load_certificate('certificate', os.path.join(os.path.dirname(self.config_file_path), 'root_cert'), key_type)
         return root_certificates
 
-    def save_certificate(self, file_type, file_name, key_type, certificate, chain=[], root_certificate=None, dhparam_pem=None, ecparam_pem=None):
+    def save_certificate(self, file_type, file_name, key_type, certificate, chain=None, root_certificate=None, dhparam_pem=None, ecparam_pem=None):
         with FileTransaction(file_type, self._file_path(file_type, file_name, key_type), chmod=0o644) as transaction:
             self._save_certificate(transaction.file, certificate, chain=chain, root_certificate=root_certificate,
                                    dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem)
@@ -1303,7 +1303,7 @@ class AcmeManager(object):
             transaction.write(ocsp_response.dump())
         return transaction
 
-    def generate_csr(self, private_key, common_name, alt_names=[], must_staple=False):
+    def generate_csr(self, private_key, common_name, alt_names=(), must_staple=False):
         req = OpenSSL.crypto.X509Req()
         req.get_subject().CN = common_name
         extensions = [
@@ -1483,7 +1483,7 @@ class AcmeManager(object):
         return '{script}/{version} acme-python/{acme_version}'.format(script=self.script_name, version=self.script_version,
                                                                       acme_version=pkg_resources.get_distribution('acme').version)
 
-    def _generate_client_key(self, client_key_path):
+    def _generate_client_key(self):
         self.client_key = josepy.JWKRSA(key=rsa.generate_private_key(public_exponent=65537, key_size=4096, backend=default_backend()))
 
     def connect_client(self):
@@ -1497,7 +1497,7 @@ class AcmeManager(object):
                 self._detail('Loaded clent key ', client_key_path, '\n')
         else:
             self._status('Client key not present, generating\n')
-            self._generate_client_key(client_key_path)
+            self._generate_client_key()
             generated_client_key = True
 
         registration = None
@@ -1512,7 +1512,7 @@ class AcmeManager(object):
                     self._status('ACME service URL has changed, re-registering with new client key\n')
                     registration = None
                     # ACME-ISSUE Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
-                    self._generate_client_key(client_key_path)
+                    self._generate_client_key()
                     generated_client_key = True
 
         if (registration):
@@ -1789,7 +1789,7 @@ class AcmeManager(object):
                     return messages.OrderResource(body=body, uri=response.headers.get('Location'), authorizations=authorizations)
         return None
 
-    def process_authorizations(self, private_key_names=[]):
+    def process_authorizations(self, private_key_names=None):
         domain_names = collections.OrderedDict()
 
         # gather domain names from all specified certtificates
@@ -1849,7 +1849,7 @@ class AcmeManager(object):
             raise body.error
         return order.update(body=body), response
 
-    def process_certificates(self, auth_fetch_only, private_key_names=[]):
+    def process_certificates(self, auth_fetch_only, private_key_names=None):
         private_keys = self._config('private_keys')
         updated_key_zones = set()
         processed_keys = []
@@ -1888,10 +1888,8 @@ class AcmeManager(object):
 
             if (0 < youngest_key_timestamp):
                 now = datetime.datetime.utcnow()
-                youngest_key_age = (now - datetime.datetime.utcfromtimestamp(youngest_key_timestamp))
                 oldest_key_age = (now - datetime.datetime.utcfromtimestamp(oldest_key_timestamp))
             else:
-                youngest_key_age = None
                 oldest_key_age = None
 
             def _duration(prefix, days):
