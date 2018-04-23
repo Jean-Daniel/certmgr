@@ -402,7 +402,7 @@ class AcmeManager(object):
             if (os.path.isfile(config_file_path)):
                 try:
                     with open(config_file_path) as config_file:
-                        return (json.load(config_file, object_pairs_hook=collections.OrderedDict), os.path.abspath(config_file_path))
+                        return (json.load(config_file, object_pairs_hook=collections.OrderedDict), os.path.realpath(config_file_path))
                 except Exception as error:
                     self._error('Error reading config file ', config_file_path, ': ', error, '\n')
         self._error('Config file ', file_path, ' not found\n')
