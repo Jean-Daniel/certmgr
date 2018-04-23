@@ -1328,15 +1328,17 @@ class AcmeManager(object):
         return os.stat(directory).st_dev
 
     def _add_hook(self, hook_name, **kwargs):
-        hook = self._config('hooks', hook_name)
-        if (hook):
-            args = {}
-            for key in kwargs:
-                args[key] = shlex.quote(kwargs[key])
+        hooks = self._config('hooks', hook_name)
+        if (hooks):
+            args = {key: shlex.quote(value) for key, value in kwargs.items()}
             if (hook_name not in self.hooks):
                 self.hooks[hook_name] = []
             try:
-                self.hooks[hook_name].append(hook.format(**args))
+                # Hook take an array of commands, or a single command string
+                if isinstance(hooks, str):
+                    hooks = (hooks,)
+                for hook in hooks:
+                    self.hooks[hook_name].append(hook.format(**args))
             except KeyError as error:
                 self._warn('Invalid hook specification for ', hook_name, ', unknown key ', error, '\n')
 
