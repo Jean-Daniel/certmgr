@@ -43,7 +43,6 @@ def verify_requirements():
 
 verify_requirements()
 
-
 import argparse
 import base64
 import binascii
@@ -67,7 +66,6 @@ import tempfile
 import time
 import urllib
 
-
 import DNS
 
 import OpenSSL
@@ -84,7 +82,6 @@ from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption,
 import josepy
 
 import pkg_resources
-
 
 DNSTuple = collections.namedtuple('DNSTuple', ['datetime', 'name_server', 'domain_name', 'identifier', 'response', 'attempt_count'])
 ChallengeTuple = collections.namedtuple('ChallengeTuple', ['identifier', 'response'])
@@ -497,6 +494,7 @@ class AcmeManager(object):
     def _open_file(self, file_path, mode='r', chmod=0o777, warn=True):
         def opener(file_path, flags):
             return os.open(file_path, flags, mode=chmod)
+
         if ((('w' in mode) or ('a' in mode)) and isinstance(file_path, str)):
             self._makedir(os.path.dirname(file_path), chmod=chmod, warn=warn)
         return open(file_path, mode, opener=opener)
@@ -793,12 +791,12 @@ class AcmeManager(object):
             records = []
             record_bytes = set()
             for certificate_bytes in certificates:
-                if (certificate_bytes and certificate_bytes not in record_bytes):   # dedupe chain certificates (may be shared between key types)
+                if (certificate_bytes and certificate_bytes not in record_bytes):  # dedupe chain certificates (may be shared between key types)
                     record_bytes.add(certificate_bytes)
                     records.append('{usage} 0 1 {digest}'.format(usage=usage_id, digest=hashlib.sha256(certificate_bytes).hexdigest()))
                     records.append('{usage} 0 2 {digest}'.format(usage=usage_id, digest=hashlib.sha512(certificate_bytes).hexdigest()))
             for key_bytes in keys:
-                if (key_bytes and key_bytes not in record_bytes):   # dedupe chain certificates (may be shared between key types)
+                if (key_bytes and key_bytes not in record_bytes):  # dedupe chain certificates (may be shared between key types)
                     record_bytes.add(key_bytes)
                     records.append('{usage} 1 1 {digest}'.format(usage=usage_id, digest=hashlib.sha256(key_bytes).hexdigest()))
                     records.append('{usage} 1 2 {digest}'.format(usage=usage_id, digest=hashlib.sha512(key_bytes).hexdigest()))
@@ -856,7 +854,7 @@ class AcmeManager(object):
         else:
             self._warn('Unsupported key curve: ', key_curve, '\n')
             return None
-#        return OpenSSL.crypto.PKey.from_cryptography_key(key)  # currently not supported
+        #        return OpenSSL.crypto.PKey.from_cryptography_key(key)  # currently not supported
         key_pem = key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
         return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, key_pem)
 
@@ -977,7 +975,7 @@ class AcmeManager(object):
 
     def _generate_hpkp_headers(self, file_name, private_keys, hpkp_days, pin_subdomains, report_uri):
         pins = '; '.join([r'pin-sha256=\"{digest}\"'.format(digest=base64.b64encode(self._public_key_digest(private_key)).decode('ascii'))
-                         for private_key in private_keys])
+                          for private_key in private_keys])
         duration = str(hpkp_days * 86400)
         sub_domains = ' includeSubdomains;' if (pin_subdomains) else ''
         report = r' report-uri=\"{report_uri}\";'.format(report_uri=report_uri) if (report_uri) else ''
@@ -1420,7 +1418,7 @@ class AcmeManager(object):
         return None
 
     def _validate_config(self):
-        if ('settings' in self.config):     # backward compat with changed config options
+        if ('settings' in self.config):  # backward compat with changed config options
             if (('slave_mode' in self.config['settings']) and ('follower_mode' not in self.config['settings'])):
                 self.config['settings']['follower_mode'] = self.config['settings']['slave_mode']
 
@@ -1466,7 +1464,7 @@ class AcmeManager(object):
             self.config['settings']['verify'] = verify_list
 
         private_keys = self.config.get('private_keys', collections.OrderedDict())
-        if ('certificates' in self.config):     # convert bare certificate definitions to private key definitions
+        if ('certificates' in self.config):  # convert bare certificate definitions to private key definitions
             certificates = self.config['certificates']
             for certificate_name in certificates:
                 if (certificate_name not in private_keys):
@@ -1625,8 +1623,8 @@ class AcmeManager(object):
     def _is_wildcard_auth(self, authorization_resource):
         if (hasattr(authorization_resource.body, 'wildcard')):
             return authorization_resource.body.wildcard
-        if (not self._get_challenge(authorization_resource, 'http-01')):    # boulder not currently returning the wildcard field
-            return True                                                     # so if no http challenge, presume this is a wildcard auth
+        if (not self._get_challenge(authorization_resource, 'http-01')):  # boulder not currently returning the wildcard field
+            return True  # so if no http challenge, presume this is a wildcard auth
         return False
 
     def _handle_authorizations(self, order, fetch_only, domain_names):
@@ -1894,9 +1892,9 @@ class AcmeManager(object):
         key_types = self._get_list(private_key_config, 'key_types', self._key_types)
         key_options = collections.OrderedDict()
         if (key_size and ('rsa' in key_types)):
-            key_options['rsa'] = (key_size, )
+            key_options['rsa'] = (key_size,)
         if (key_curve and ('ecdsa' in key_types)):
-            key_options['ecdsa'] = (key_curve, )
+            key_options['ecdsa'] = (key_curve,)
         return key_options
 
     def _poll_order(self, order):
@@ -2117,7 +2115,7 @@ class AcmeManager(object):
                     except Exception as error:
                         self._warn(key_type.upper(), ' certificate issuance failed\n', self._indent(error), '\n')
                         if (rolled_private_key):
-                            issued_certificates = []    # do not partially install new certificates if private key changed
+                            issued_certificates = []  # do not partially install new certificates if private key changed
                             break
                         continue
 
@@ -2332,7 +2330,7 @@ class AcmeManager(object):
                             for zone_name in key_certificates[certificate_name]['alt_names']:
                                 if (not self._zone_key(zone_name)):
                                     updated_key_zones.add(zone_name)
-                if (generated_backup_key or generated_hpkp_headers):    # reload services for all certificates
+                if (generated_backup_key or generated_hpkp_headers):  # reload services for all certificates
                     for certificate_name in key_certificates:
                         self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
 
@@ -2940,7 +2938,7 @@ class AcmeManager(object):
             if (self.args.ocsp):
                 self.update_ocsp_responses(self.args.private_key_names)
             if (self.reload_services() and self.args.verify):
-                time.sleep(5)   # allow time for services to reload before verification
+                time.sleep(5)  # allow time for services to reload before verification
             if (self.args.verify):
                 self.verify_certificate_installation(self.args.private_key_names)
             self.disconnect_client()
@@ -2963,5 +2961,5 @@ def debug_hook(type, value, tb):
         pdb.pm()
 
 
-if __name__ == '__main__':      # called from the command line
+if __name__ == '__main__':  # called from the command line
     AcmeManager.Run()
