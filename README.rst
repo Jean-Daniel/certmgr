@@ -18,8 +18,6 @@ notably it does not modify configuration files of other services,
 or provide a server to perform stand-alone domain validation.
 It does however, do a few things that Certbot does not,
 simplifying certificate manangement in more advanced environments.
-In addition to automatically issuing and maintaining certificates,
-the tool can also maintain associated HPKP headers and TLSA (DANE) records.
 
 
 Master/Follower Mode
@@ -37,30 +35,12 @@ Sharing of Private Keys Between Certificates
 
 This tool allows multiple certificates to be defined using the same public/private key pair.
 
-When deploying Hypertext Puplic Key Pinning (HPKP), you can optionally use the same pins to secure subdomains.
-This increases security of the site because a visitor to a root domain will have previously obtained pins for subdomains,
-reducing the possibility of a man-in-the-middle attacker installing a false pin on first visit.
-
-This practice obviously requires the use of the same public/private key pair for the domain and all subdomains.
-However, it may not be desirable to use the same certificate for all subdomains, for example,
-exposing the full list of subdomains in the alternative names of the root domain's certificate,
-or reissuing the root domain's certificate every time a subdomain is added or removed.
-
-
-Hypertext Public Key Pin (HPKP) Support
----------------------------------------
-
-This tool automatically generates and maintains HPKP header information suitable to be directly included in server configuraton files.
-Support for Apache and Nginx are provided by default, other servers may be added by the user.
-
 
 Automatic Management of Backup Private Keys
 -------------------------------------------
 
-Using HPKP requires a second public key to provide a backup when private keys are changed.
 This tool automatically generates backup keys and switches to the pre-generated backup key when rolling over private keys.
 Rolling over private keys can be done automatically and is scheduled independently of certificate expiration.
-Private key rollover is prevented in cases where insufficient time has passed to distribute backup HPKP pins.
 
 
 Parallel RSA and ECDSA Certificates
@@ -132,7 +112,7 @@ Certificate Installation Verification
 -------------------------------------
 
 This tool can automatically connect to configured servers and verify that the generated certificates are properly served via TLS.
-Additional checks are made for OSCP staples and optionally HPKP headers can be verified as well.
+Additional checks are made for OSCP staples.
 
 
 ACME Protocol V1 and V2 Support
@@ -371,16 +351,6 @@ containing the Diffie-Hellman parameters and elliptical curve paramaters.
 This file will not be created if the ``param`` directory is set to ``null``.
 
 
-Hypertext Public Key Pin (HPKP) Files
--------------------------------------
-
-Two additional files will be created in /etc/ssl/hpkp, named ``<private-key-name>.apache`` and ``<private-key-name>.nginx``.
-These files contain HTTP header directives setting HPKP for both the primary and backup private keys for each key type.
-
-Each file is suitable to be included in the server configuration for either Apache or Nginx respectively.
-
-Thess files will not be created if the ``hpkp`` directory is set to ``null``.
-
 
 Signed Certificate Timestamp (SCT) Files
 ----------------------------------------
@@ -434,7 +404,6 @@ create the file /etc/apache2/snippets/ssl/example.com containing::
     CTStaticSCTs          /etc/ssl/certs/example.com.ecdsa.pem /etc/ssl/scts/example.com/ecdsa    # requires mod_ssl_ct to be installed
 
     Header always set Strict-Transport-Security "max-age=63072000"
-    Include /etc/ssl/hpkp/example.com.apache
 
 and then in each host configuration using that certificate, simply add::
 
@@ -460,7 +429,6 @@ For Nginx the /etc/nginx/snippets/ssl/example.com file would contain::
     ssl_ecdh_curve secp384r1;
 
     add_header Strict-Transport-Security "max-age=63072000" always;
-    include /etc/ssl/hpkp/example.com.nginx;
 
 and can be used via::
 

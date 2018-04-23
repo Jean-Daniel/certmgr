@@ -213,9 +213,6 @@ class AcmeManager(object):
         argparser.add_argument('-r', '--rollover',
                                action='store_true', dest='rollover', default=False,
                                help='Rollover private keys and Diffie-Hellman parameters')
-        argparser.add_argument('-F', '--force',
-                               action='store_true', dest='force_rollover', default=False,
-                               help='Force rollover for keys within HPKP window')
         argparser.add_argument('-R', '--renew',
                                action='store_true', dest='renew', default=False,
                                help='Renew certificate regardless of age')
@@ -277,9 +274,6 @@ class AcmeManager(object):
                 'ecparam_curve': 'secp384r1',
                 'file_user': 'root',
                 'file_group': 'ssl-cert',
-                'hpkp_days': 60,
-                'pin_subdomains': True,
-                'hpkp_report_uri': None,
                 'ocsp_must_staple': False,
                 'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
                 'ct_submit_logs': ['google_icarus', 'google_pilot'],
@@ -315,7 +309,6 @@ class AcmeManager(object):
                 'param': '/etc/ssl/params',
                 'challenge': '/etc/ssl/challenges',
                 'http_challenge': None,
-                'hpkp': '/etc/ssl/hpkp',
                 'ocsp': '/etc/ssl/ocsp/',
                 'sct': '/etc/ssl/scts/{name}/{key_type}',
                 'update_key': '/etc/ssl/update_keys',
@@ -337,13 +330,8 @@ class AcmeManager(object):
                 'chain': '{name}_chain{suffix}.pem',
                 'param': '{name}_param.pem',
                 'challenge': '{name}',
-                'hpkp': '{name}.{server}',
                 'ocsp': '{name}{suffix}.ocsp',
                 'sct': '{ct_log_name}.sct'
-            },
-            'hpkp_headers': {
-                'apache': 'Header always set Public-Key-Pins "{header}"\n',
-                'nginx': 'add_header Public-Key-Pins "{header}" always;\n'
             },
             'services': {
                 'apache': 'systemctl reload apache2',
@@ -938,11 +926,6 @@ class AcmeManager(object):
             return (expiration_days <= backup_key_age.days)
         return False
 
-    def _safe_to_rollover(self, backup_key_age, hpkp_days):
-        if ((backup_key_age is not None) and hpkp_days):
-            return (hpkp_days < backup_key_age.days)
-        return True
-
     def _private_key_matches_options(self, key_type, private_key, options):
         if ('rsa' == key_type):
             return (private_key.bits() == options[0])
@@ -978,49 +961,6 @@ class AcmeManager(object):
         if (certificate):
             return OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_ASN1, certificate)
         return None
-
-    def _generate_hpkp_headers(self, file_name, private_keys, hpkp_days, pin_subdomains, report_uri):
-        pins = '; '.join([r'pin-sha256=\"{digest}\"'.format(digest=base64.b64encode(self._public_key_digest(private_key)).decode('ascii'))
-                          for private_key in private_keys])
-        duration = str(hpkp_days * 86400)
-        sub_domains = ' includeSubdomains;' if (pin_subdomains) else ''
-        report = r' report-uri=\"{report_uri}\";'.format(report_uri=report_uri) if (report_uri) else ''
-        header = '{pins}; max-age={duration};{sub_domains}{report}'.format(pins=pins, duration=duration, sub_domains=sub_domains, report=report)
-
-        hpkp_headers = self._config('hpkp_headers')
-        server_headers = {}
-        for server, header_format in hpkp_headers.items():
-            if (header_format):
-                server_headers[server] = header_format.format(header=header, server=server, name=file_name)
-        return server_headers
-
-    def hpkp_headers_present(self, file_name, private_keys, hpkp_days, pin_subdomains, report_uri):
-        server_headers = self._generate_hpkp_headers(file_name, private_keys, hpkp_days, pin_subdomains, report_uri)
-        for server, header in server_headers.items():
-            header_file_path = self._file_path('hpkp', file_name, server=server)
-            if (os.path.isfile(header_file_path)):
-                with open(header_file_path, 'r') as header_file:
-                    if (header != header_file.read()):
-                        return False
-            else:
-                return False
-        return True
-
-    def save_hpkp_headers(self, file_name, private_keys, hpkp_days, pin_subdomains, report_uri):
-        server_headers = self._generate_hpkp_headers(file_name, private_keys, hpkp_days, pin_subdomains, report_uri)
-        transactions = []
-        for server, header in server_headers.items():
-            with FileTransaction('hpkp', self._file_path('hpkp', file_name, server=server), chmod=0o644) as transaction:
-                transaction.write(header)
-                transactions.append(transaction)
-            self._add_hook('hpkp_header_installed', key_name=file_name, server=server, header=header,
-                           hpkp_file=self._file_path('hpkp', file_name, server=server))
-        return transactions
-
-    def archive_hpkp_headers(self, file_name, archive_name='', archive_date=None):
-        hpkp_headers = self._config('hpkp_headers')
-        for server in hpkp_headers:
-            self._archive_file('hpkp', self._file_path('hpkp', file_name, server=server), archive_name=archive_name, archive_date=archive_date)
 
     def _ocsp_must_staple_extension(self):
         return OpenSSL.crypto.X509Extension(
@@ -1442,7 +1382,7 @@ class AcmeManager(object):
             self._error('Unable to create temp directory: "', temp_dir, '"\n')
         temp_device = self._device_id(temp_dir)
         for directory_type in ['resource', 'private_key', 'backup_key', 'previous_key', 'full_key', 'certificate', 'full_certificate',
-                               'chain', 'param', 'challenge', 'hpkp', 'sct', 'archive']:
+                               'chain', 'param', 'challenge', 'sct', 'archive']:
             directory = self._directory(directory_type)
             if (directory and (self._device_id(directory) != temp_device)):
                 self._error('Temp directory must be on same device as ', directory_type, ' directory\n')
@@ -1479,8 +1419,7 @@ class AcmeManager(object):
                     private_keys[certificate_name]['certificates'] = collections.OrderedDict()
                 if (certificate_name not in private_keys[certificate_name]['certificates']):
                     for config_key in ('key_types', 'key_size', 'key_curve', 'key_cipher', 'key_passphrase',
-                                       'expiration_days', 'auto_rollover',
-                                       'hpkp_days', 'pin_subdomains', 'hpkp_report_uri'):
+                                       'expiration_days', 'auto_rollover'):
                         if ((config_key in certificates[certificate_name]) and (config_key not in private_keys[certificate_name])):
                             private_keys[certificate_name][config_key] = certificates[certificate_name][config_key]
                             del certificates[certificate_name][config_key]
@@ -1926,7 +1865,6 @@ class AcmeManager(object):
                 self._warn('No configured private key types for ', private_key_name, '\n')
                 continue
 
-            hpkp_days = self._option_int(private_keys[private_key_name], 'hpkp_days')
             expiration_days = self._option_int(private_keys[private_key_name], 'expiration_days')
 
             rolled_private_key = False
@@ -1968,12 +1906,7 @@ class AcmeManager(object):
             if (self.args.rollover
                     or (self._option(private_keys[private_key_name], 'auto_rollover')
                         and self._need_to_rollover(oldest_key_age, expiration_days))):
-                if (self.args.force_rollover or self._safe_to_rollover(youngest_key_age, hpkp_days)):
-                    rollover = True
-                else:
-                    self._warn('A backup private key for ', private_key_name, ' is younger than HPKP duration',
-                               _duration(' by ', hpkp_days - youngest_key_age.days), ', rollover skipped\n',
-                               'Use "--force" to force key rollover, note that this can brick a web site if HPKP is deployed\n')
+                rollover = True
 
             try:
                 keys = {key_type: self.load_private_key('private_key', private_key_name, key_type, key_cipher_data) for key_type in key_options}
@@ -1984,12 +1917,7 @@ class AcmeManager(object):
             for key_type, options in key_options.items():
                 if (keys[key_type].key and not self._private_key_matches_options(key_type, keys[key_type].key, options)):
                     self._info('Private ', key_type.upper(), ' key is not ', self._private_key_descripton(key_type, options), '\n')
-                    if (self.args.force_rollover or self._safe_to_rollover(youngest_key_age, hpkp_days)):
-                        keys[key_type] = KeyData(None, None)
-                    else:
-                        self._warn('A backup private key for ', private_key_name, ' is younger than HPKP duration',
-                                   _duration(' by ', hpkp_days - youngest_key_age.days), ', rollover skipped\n',
-                                   'Use "--force" to force key rollover, note that this can brick a web site if HPKP is deployed\n')
+                    keys[key_type] = KeyData(None, None)
 
             previous_keys = {}
             try:
@@ -2014,8 +1942,7 @@ class AcmeManager(object):
                 self._status('Private key rolling over for ', private_key_name, '\n')
 
             if (not rolled_private_key
-                    and self._need_to_rollover(oldest_key_age, expiration_days)
-                    and self._safe_to_rollover(youngest_key_age, hpkp_days)):
+                    and self._need_to_rollover(oldest_key_age, expiration_days)):
                 self._status('Backup key for ', private_key_name, ' has expired. Use "--rollover" to replace.\n')
 
             for key_type, options in key_options.items():
@@ -2183,24 +2110,6 @@ class AcmeManager(object):
                 self._warn('Unable to encrypt private key ', error, '\n')
                 continue
 
-            # verify and generate hpkp headers
-            generated_hpkp_headers = False
-            hpkp_days = self._option_int(private_keys[private_key_name], 'hpkp_days')
-            if (0 < hpkp_days) and (self._directory('hpkp')):
-                pin_subdomains = self._option(private_keys[private_key_name], 'pin_subdomains')
-                hpkp_report_uri = self._option(private_keys[private_key_name], 'hpkp_report_uri')
-                keys = ([private_key_data.keys[key_type].key for key_type in private_key_data.key_options if private_key_data.keys[key_type].key]
-                        + [private_key_data.backup_keys[key_type].key for key_type in private_key_data.key_options
-                           if private_key_data.backup_keys[key_type].key]
-                        + [private_key_data.previous_keys[key_type].key for key_type in private_key_data.key_options
-                           if private_key_data.previous_keys[key_type].key])
-                if ((1 < len(keys))
-                        and (private_key_data.generated_key or private_key_data.changed_key or generated_backup_key
-                             or not self.hpkp_headers_present(private_key_name, keys, hpkp_days, pin_subdomains, hpkp_report_uri))):
-                    self._status('Generating HPKP headers for ', private_key_name, '\n')
-                    transactions += self.save_hpkp_headers(private_key_name, keys, hpkp_days, pin_subdomains, hpkp_report_uri)
-                    generated_hpkp_headers = True
-
             # verify DH and EC params for all certificates
             key_certificates = private_keys[private_key_name].get('certificates', {})
             certificate_params = {}
@@ -2336,7 +2245,7 @@ class AcmeManager(object):
                             for zone_name in key_certificates[certificate_name]['alt_names']:
                                 if (not self._zone_key(zone_name)):
                                     updated_key_zones.add(zone_name)
-                if (generated_backup_key or generated_hpkp_headers):  # reload services for all certificates
+                if (generated_backup_key):  # reload services for all certificates
                     for certificate_name in key_certificates:
                         self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
 
@@ -2409,7 +2318,6 @@ class AcmeManager(object):
                     for key_type in key_options:
                         self.archive_private_key('private_key', private_key_name, key_type, archive_name=private_key_name, archive_date=archive_date)
                         self.archive_private_key('previous_key', private_key_name, key_type, archive_name=private_key_name, archive_date=archive_date)
-                        self.archive_hpkp_headers(private_key_name, archive_name=private_key_name, archive_date=archive_date)
             else:
                 self._warn(private_key_name, ' is not a configured private key\n')
 
@@ -2702,27 +2610,7 @@ class AcmeManager(object):
             self._warn('Unable to fetch http headers from ', host_name, '\n', self._indent(error), '\n')
         return None
 
-    def _get_protocol_info(self, protocol, sock, host_name):
-        if ('http' == protocol.lower()):
-            headers = self._get_http_headers(sock, host_name)
-            if (headers is not None):
-                protocol_info = {}
-                if ('public-key-pins' in headers):
-                    pin_header = headers['public-key-pins']
-                    pins = []
-                    for pin in pin_header.split(';'):
-                        pin = pin.strip()
-                        if (pin.startswith('pin-') and ('=' in pin)):
-                            parts = pin.split('=', 1)
-                            pins.append((parts[0][4:], base64.b64decode(parts[1].strip('"\''))))
-                    protocol_info['public_key_pins'] = pins
-                return protocol_info
-            else:
-                return None
-        else:
-            raise Exception('Unsupported verification protocol: ' + protocol)
-
-    def _fetch_tls_info(self, addr, ssl_context, key_type, host_name, starttls, protocol):
+    def _fetch_tls_info(self, addr, ssl_context, key_type, host_name, starttls):
         sock = socket.socket(addr[0], socket.SOCK_STREAM)
         sock.connect(addr[4])
 
@@ -2747,11 +2635,9 @@ class AcmeManager(object):
                     '\n')
         installed_certificates = ssl_sock.get_peer_cert_chain()
 
-        protocol_info = self._get_protocol_info(protocol, ssl_sock, host_name) if (protocol) else None
-
         ssl_sock.shutdown()
         ssl_sock.close()
-        return installed_certificates, app_data['ocsp'], protocol_info
+        return installed_certificates, app_data['ocsp']
 
     def _verify_certificate_installation(self, certificate_name, certificate, chain, key_type, host_name, port_number, starttls, cipher_list, protocol, keys):
         ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
@@ -2769,13 +2655,13 @@ class AcmeManager(object):
             host_desc = host_name + ' at ' + (('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0]) + ':' + str(port_number)
             try:
                 self._debug('Connecting to ', host_desc, ' with ', key_type.upper(), ' ciphers\n')
-                installed_certificates, ocsp_staple, protocol_info = self._fetch_tls_info(addr, ssl_context, key_type, host_name, starttls, protocol)
+                installed_certificates, ocsp_staple = self._fetch_tls_info(addr, ssl_context, key_type, host_name, starttls)
                 if (self.has_oscp_must_staple(certificate)):
                     attempts = 1
                     while ((not ocsp_staple) and (attempts < self._setting_int('max_ocsp_verify_attempts'))):
                         time.sleep(self._setting_int('ocsp_verify_retry_delay'))
                         self._detail('Retrying to fetch OCSP staple\n')
-                        installed_certificates, ocsp_staple, protocol_info = self._fetch_tls_info(addr, ssl_context, key_type, host_name, starttls, protocol)
+                        installed_certificates, ocsp_staple = self._fetch_tls_info(addr, ssl_context, key_type, host_name, starttls)
                         attempts += 1
 
                 installed_certificate = installed_certificates[0]
@@ -2805,22 +2691,6 @@ class AcmeManager(object):
                 else:
                     if (self.has_oscp_must_staple(certificate)):
                         self._warn('ERROR: Certificate has OCSP Must-Staple but no OSCP staple found on ', host_desc, '\n')
-
-                if (protocol_info):
-                    if ('public_key_pins' in protocol_info):
-                        for pin_key_type, pin_key_name, pin_key_purpose, pin_key in keys:
-                            digests = {'sha256': self._public_key_digest(pin_key, 'sha256'), 'sha512': self._public_key_digest(pin_key, 'sha512')}
-                            for pin in protocol_info['public_key_pins']:
-                                if (digests[pin[0]] == pin[1]):
-                                    self._info('Public key pin found for ', pin_key_type.upper(), ' ', pin_key_purpose, ' key ', pin_key_name,
-                                               ' on ', host_desc, '\n',
-                                               color='green')
-                                    break
-                            else:
-                                self._warn('ERROR: Public key pin missing for ', pin_key_type.upper(), ' ', pin_key_purpose, ' key ', pin_key_name,
-                                           ' on ', host_desc, '\n')
-                    else:
-                        self._warn('ERROR: Public key pins not found on ', host_desc, '\n')
 
             except Exception as error:
                 self._warn('ERROR: Unable to connect to ', host_desc, ' via ', key_type.upper(), '\n', self._indent(error), '\n')
