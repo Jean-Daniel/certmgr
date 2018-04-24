@@ -2464,9 +2464,17 @@ class AcmeManager(object):
                 self._warn('No configured private key types for ', private_key_name, '\n')
                 continue
 
+            # ignore ocsp if explicitly disabled for this private key
+            if 'ocsp_responder_urls' in private_keys[private_key_name] and not private_keys[private_key_name]['ocsp_responder_urls']:
+                continue
+
             transactions = []
             key_certificates = private_keys[private_key_name].get('certificates', {})
             for certificate_name in key_certificates:
+                # ignore ocsp if explicitly disabled for this certificate
+                if 'ocsp_responder_urls' in key_certificates[certificate_name] and not key_certificates[certificate_name]['ocsp_responder_urls']:
+                    continue
+
                 certificate_key_types = self._get_list(key_certificates[certificate_name], 'key_types', key_options.keys())
                 for key_type in certificate_key_types:
                     certificate = self.load_certificate('certificate', certificate_name, key_type)
