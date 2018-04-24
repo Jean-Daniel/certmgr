@@ -1508,7 +1508,7 @@ class AcmeManager(object):
         if (os.path.isfile(client_key_path)):
             with open(client_key_path) as client_key_file:
                 self.client_key = josepy.JWKRSA.fields_from_json(json.load(client_key_file))
-                self._detail('Loaded clent key ', client_key_path, '\n')
+                self._detail('Loaded client key ', client_key_path, '\n')
         else:
             self._status('Client key not present, generating\n')
             self._generate_client_key()
