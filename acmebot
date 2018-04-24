@@ -1330,15 +1330,22 @@ class AcmeManager(object):
     def _add_hook(self, hook_name, **kwargs):
         hooks = self._config('hooks', hook_name)
         if (hooks):
-            args = {key: shlex.quote(value) for key, value in kwargs.items()}
             if (hook_name not in self.hooks):
                 self.hooks[hook_name] = []
+
+            # Hook take an array of commands, or a single command
+            if isinstance(hooks, (str, dict)):
+                hooks = (hooks,)
             try:
-                # Hook take an array of commands, or a single command string
-                if isinstance(hooks, str):
-                    hooks = (hooks,)
                 for hook in hooks:
-                    self.hooks[hook_name].append(hook.format(**args))
+                    if isinstance(hook, str):
+                        hook = {
+                            'args': shlex.split(hook)
+                        }
+                    else:
+                        hook = hook.copy()
+                    hook['args'] = [arg.format(**kwargs) for arg in hook['args']]
+                    self.hooks[hook_name].append(hook)
             except KeyError as error:
                 self._warn('Invalid hook specification for ', hook_name, ', unknown key ', error, '\n')
 
@@ -1346,12 +1353,13 @@ class AcmeManager(object):
         for hook_name, hooks in self.hooks.items():
             for hook in hooks:
                 try:
-                    self._debug('Calling hook ', hook_name, ': ', hook, '\n')
-                    self._status(subprocess.check_output(hook, stderr=subprocess.STDOUT, shell=True))
+                    self._debug('Calling hook ', hook_name, ': ', hook['args'], '\n')
+                    # TODO: add support for cwd, env, …
+                    self._status(subprocess.check_output(hook['args'], stderr=subprocess.STDOUT, shell=False))
                 except subprocess.CalledProcessError as error:
                     self._warn('Hook ', hook_name, ' returned error, code: ', error.returncode, '\n', self._indent(error.output), '\n')
                 except Exception as error:
-                    self._warn('Failed to call hook ', hook_name, ': ', hook, '\n', self._indent(error), '\n')
+                    self._warn('Failed to call hook ', hook_name, ': ', hook['args'], '\n', self._indent(error), '\n')
         self._clear_hooks()
 
     def _clear_hooks(self):

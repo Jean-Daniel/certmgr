@@ -1292,7 +1292,10 @@ Example::
     {
         ...
         "hooks": {
-            certificate_installed": "scp {certificate_file} remote-server:/etc/ssl/certs/"
+            certificate_installed": [
+                { args: ["scp", "{certificate_file}", "remote-server:/etc/ssl/certs/" ] },
+                "scp {certificate_file} remote-server2:/etc/ssl/certs/"
+            ]
         },
         ...
     }
