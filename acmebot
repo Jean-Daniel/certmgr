@@ -248,6 +248,7 @@ class AcmeManager(object):
         self.acme_client = None
         self.key_passphrases = {}
         self.updated_services = set()
+        self.updated_certificates = set()
         self.hooks = collections.OrderedDict()
 
         self._log_file = None
@@ -811,6 +812,9 @@ class AcmeManager(object):
             host_name = zone_name if ('@' == tlsa_data.host) else (tlsa_data.host + '.' + zone_name)
             updates.append('update delete _{port}._{proto}.{host}. TLSA'.format(port=tlsa_data.port, proto=tlsa_data.protocol, host=host_name))
         self._update_zone(updates, zone_name, zone_key, 'Remove TLSA')
+
+    def update_certificate(self, certificate_name: str):
+        self.updated_certificates.add(certificate_name)
 
     def update_services(self, services):
         self.updated_services.update(services)
@@ -2249,6 +2253,7 @@ class AcmeManager(object):
                     for key_type in saved_certificates[certificate_name]:
                         self._status(key_type.upper(), ' certificate ', certificate_name, ' installed\n')
                         self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
+                        self.update_certificate(certificate_name)
                         if (not self._setting('follower_mode')):
                             for zone_name in key_certificates[certificate_name]['alt_names']:
                                 if (not self._zone_key(zone_name)):
@@ -2256,6 +2261,7 @@ class AcmeManager(object):
                 if (generated_backup_key):  # reload services for all certificates
                     for certificate_name in key_certificates:
                         self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
+                        self.update_certificate(certificate_name)
 
             except Exception as error:
                 self._warn('Unable to install keys and certificates for ', private_key_name, '\n', self._indent(error), '\n')
@@ -2430,6 +2436,7 @@ class AcmeManager(object):
                                                    certificate_name=certificate_name, ct_log_name=ct_log_name,
                                                    sct_file=self._file_path('sct', certificate_name, key_type, ct_log_name=ct_log_name))
                                     self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
+                                    self.update_certificate(certificate_name)
                         else:
                             self._warn(key_type.upper(), ' certificate ', certificate_name, ' not found\n')
 
@@ -2526,6 +2533,7 @@ class AcmeManager(object):
                                                        certificate_name=certificate_name,
                                                        ocsp_file=self._file_path('ocsp', certificate_name, key_type))
                                         self.update_services(self._get_list(key_certificates[certificate_name], 'services'))
+                                        self.update_certificate(certificate_name)
                                         break
                                     else:
                                         self._warn(key_type.upper(), ' certificate ', certificate_name, ' has OCSP status "', ocsp_status.upper(), '"',
@@ -2823,6 +2831,10 @@ class AcmeManager(object):
                 self.update_ocsp_responses(self.args.private_key_names)
             if (self.reload_services() and self.args.verify):
                 time.sleep(5)  # allow time for services to reload before verification
+            # Call hook usefull to sync status with other hosts
+            if (self.updated_certificates):
+                self._add_hook('certificates_updated', certificates=json.dumps(sorted(self.updated_certificates)))
+                self._call_hooks()
             if (self.args.verify):
                 self.verify_certificate_installation(self.args.private_key_names)
             self.disconnect_client()
