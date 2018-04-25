@@ -1000,10 +1000,14 @@ class AcmeManager(object):
                 OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate2))
 
     def load_certificate(self, file_type, file_name, key_type):
+        cert_path = self._file_path(file_type, file_name, key_type)
         try:
-            with open(self._file_path(file_type, file_name, key_type), 'r') as certificate_file:
+            with open(cert_path, 'r') as certificate_file:
                 return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate_file.read().encode('ascii'))
-        except Exception:
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            self._error("Certificate loading failed (", cert_path, "): ", e)
             return None
 
     def load_root_certificates(self):
