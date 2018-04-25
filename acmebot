@@ -234,6 +234,9 @@ class AcmeManager(object):
         argparser.add_argument('-o', '--ocsp',
                                action='store_true', dest='ocsp', default=False,
                                help='Update OCSP responses only')
+        argparser.add_argument('-S', '--symlink',
+                               action='store_true', dest='symlink', default=False,
+                               help='Create symlinks to simplify certificate management')
         argparser.add_argument('-V', '--verify',
                                action='store_true', dest='verify', default=False,
                                help='Verify certificate installation only')
@@ -299,6 +302,7 @@ class AcmeManager(object):
             'directories': {
                 'pid': '/var/run',
                 'log': os.path.join('/var/log', self.script_name),
+                'symlinks': None,
                 'resource': os.path.join('/var/local', self.script_name),
                 'private_key': '/etc/ssl/private',
                 'backup_key': '/etc/ssl/private',
@@ -2816,12 +2820,14 @@ class AcmeManager(object):
         with self._open_file(pid_file_path, 'w') as pid_file:
             pid_file.write(str(os.getpid()))
         try:
-            if (not (self.args.revoke or self.args.auth or self.args.certs or self.args.tlsa or self.args.sct or self.args.ocsp or self.args.verify)):
+            if (not (
+                    self.args.revoke or self.args.auth or self.args.certs or self.args.tlsa or self.args.sct or self.args.ocsp or self.args.symlink or self.args.verify)):
                 self.args.auth = True
                 self.args.certs = True
                 self.args.tlsa = True
                 self.args.sct = True
                 self.args.ocsp = True
+                self.args.symlink = True
                 self.args.verify = True
 
             if (self.args.revoke or self.args.auth or self.args.certs):
@@ -2842,6 +2848,8 @@ class AcmeManager(object):
                 self.update_signed_certificate_timestamps(self.args.private_key_names)
             if (self.args.ocsp):
                 self.update_ocsp_responses(self.args.private_key_names)
+            if (self.args.symlink):
+                self.process_symlinks(self.args.private_key_names)
             if (self.reload_services() and self.args.verify):
                 time.sleep(5)  # allow time for services to reload before verification
             # Call hook usefull to sync status with other hosts
@@ -2859,6 +2867,87 @@ class AcmeManager(object):
                 except Exception:
                     pass
             os.remove(pid_file_path)
+
+    def process_symlink(self, alt_names, target, link):
+        create = os.path.exists(target)
+
+        for alt_name in alt_names:
+            src = os.path.join(self._directory('symlinks'), alt_name, link)
+            if create:
+                try:
+                    if os.readlink(src) == target:
+                        return
+                except FileNotFoundError:
+                    pass
+                self._detail("create symlink '", src, '" pointing to "', target, "'\n")
+                os.symlink(target, src)
+            else:
+                try:
+                    os.remove(src)
+                    self._detail("removing stall symlink: ", src, "\n")
+                except FileNotFoundError:
+                    pass
+
+    def process_symlinks(self, private_key_names):
+        if not self._directory('symlinks'):
+            return
+
+        private_keys = self._config('private_keys')
+        for private_key_name in private_keys:
+            if (private_key_names and (private_key_name not in private_key_names)):
+                continue
+
+            key_options = self._get_key_options(private_keys[private_key_name])
+            if (not key_options):
+                self._warn('No configured private key types for ', private_key_name, '\n')
+                continue
+
+            key_certificates = private_keys[private_key_name].get('certificates', {})
+            for certificate_name in key_certificates:
+                self._debug('Symlink certificate ', certificate_name, '\n')
+
+                alt_names = []
+                for zone_name in key_certificates[certificate_name]['alt_names']:
+                    alt_names += self._get_domain_names(key_certificates[certificate_name]['alt_names'], zone_name)
+
+                common_name = key_certificates[certificate_name].get('common_name', certificate_name)
+                assert common_name in alt_names
+
+                # Create target directories
+                root = self._directory('symlinks')
+                for alt_name in alt_names:
+                    os.makedirs(os.path.join(root, alt_name), mode=0o755, exist_ok=True)
+
+                target = self._file_path('param', certificate_name)
+                self.process_symlink(alt_names, target, 'params.pem')
+
+                certificate_key_types = self._get_list(key_certificates[certificate_name], 'key_types', key_options.keys())
+                for key_type in certificate_key_types:
+                    # Private Keys
+                    target = self._file_path('private_key', private_key_name, key_type)
+                    self.process_symlink(alt_names, target, key_type + '.key')
+
+                    target = self._file_path('full_key', certificate_name, key_type)
+                    self.process_symlink(alt_names, target, 'full.' + key_type + '.key')
+
+                    # Certificate
+                    target = self._file_path('certificate', certificate_name, key_type)
+                    self.process_symlink(alt_names, target, 'cert.' + key_type + '.pem')
+
+                    target = self._file_path('chain', certificate_name, key_type)
+                    self.process_symlink(alt_names, target, 'chain.' + key_type + '.pem')
+
+                    target = self._file_path('full_certificate', certificate_name, key_type)
+                    self.process_symlink(alt_names, target, 'cert+root.' + key_type + '.pem')
+
+                    # OCSP
+                    target = self._file_path('ocsp', certificate_name, key_type)
+                    self.process_symlink(alt_names, target, key_type + '.ocsp')
+
+                    ct_submit_logs = self._option_list(key_certificates[certificate_name], 'ct_submit_logs')
+                    for ct_log_name in ct_submit_logs or ():
+                        target = self._file_path('sct', certificate_name, key_type, ct_log_name=ct_log_name)
+                        self.process_symlink(alt_names, target, ct_log_name + '.' + key_type + '.sct')
 
 
 def debug_hook(type, value, tb):
