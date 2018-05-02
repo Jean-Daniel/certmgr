@@ -6,6 +6,7 @@ import socket
 import tempfile
 
 import OpenSSL
+from asn1crypto import ocsp as asn1_ocsp
 
 from . import AcmeError
 from .ocsp import ocsp_response_status
