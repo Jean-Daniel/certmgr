@@ -2,7 +2,6 @@ import argparse
 import base64
 import datetime
 import getpass
-import hashlib
 import heapq
 import json
 import logging
@@ -17,7 +16,7 @@ import sys
 import time
 import urllib
 from logging import FileHandler, StreamHandler
-from typing import List, Iterable, Optional
+from typing import List, Optional
 
 import OpenSSL
 import collections
@@ -29,17 +28,14 @@ from asn1crypto import x509 as asn1_x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from . import PrivateKeyError, AcmeError, log
-from .crypto import save_chain, check_dhparam, check_ecparam, certificate_bytes, save_certificate, public_key_bytes, certificate_public_key_bytes, \
-    private_key_matches_options, private_key_descripton, generate_private_key, get_alt_names, private_key_matches_certificate, has_oscp_must_staple, \
+from . import PrivateKeyError, log
+from .config import Configuration
+from .crypto import save_chain, check_dhparam, check_ecparam, certificate_bytes, save_certificate, private_key_matches_options, private_key_descripton, \
+    generate_private_key, get_alt_names, private_key_matches_certificate, has_oscp_must_staple, \
     datetime_from_asn1_generaltime, generate_csr, decode_full_chain, get_dhparam_size, generate_dhparam, get_ecparam_curve, generate_ecparam, certificates_match
-from .dns import TLSAData, lookup_tlsa_records, get_name_servers, lookup_dns_challenge, tlsa_data
-from .config import Configuration, get_list
-from .dns import get_primary_name_server, reload_zone, update_zone
 from .ocsp import load_ocsp_response, ocsp_response_status, ocsp_response_serial_number, ocsp_response_this_update, fetch_ocsp_response
 from .utils import FileTransaction, makedir, open_file, ColorFormatter, rename_file, host_in_list, fetch_tls_info, process_running
 
-DNSTuple = collections.namedtuple('DNSTuple', ['datetime', 'name_server', 'domain_name', 'identifier', 'response', 'attempt_count'])
 ChallengeTuple = collections.namedtuple('ChallengeTuple', ['identifier', 'response'])
 AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'domain_name', 'authorization_resource'])
 
@@ -100,9 +96,6 @@ class AcmeManager(object):
         argparser.add_argument('-C', '--certs',
                                action='store_true', dest='certs', default=False,
                                help='Update certificates only')
-        argparser.add_argument('-t', '--tlsa',
-                               action='store_true', dest='tlsa', default=False,
-                               help='Update TLSA records only')
         argparser.add_argument('-s', '--sct',
                                action='store_true', dest='sct', default=False,
                                help='Update Signed Certificate Timestamps only')
@@ -201,81 +194,6 @@ class AcmeManager(object):
                 if original_file_path:
                     os.rename(archived_file_path, original_file_path)
             raise error
-
-    def _reload_zone(self, zone_name, critical=True):
-        return reload_zone(self.config.get('reload_zone_command'), zone_name, critical)
-
-    def _update_zone(self, updates, zone_name, zone_key, operation):
-        return update_zone(self.config.get('nsupdate_command'), updates, zone_name, zone_key, operation)
-
-    def _set_dns_challenges(self, zone_name, zone_key, challenges):
-        updates = ['update add _acme-challenge.{host} 300 TXT "{response}"'.format(host=challenges[domain_name].identifier,
-                                                                                   response=challenges[domain_name].response)
-                   for domain_name in challenges]
-        return self._update_zone(updates, zone_name, zone_key, 'Set DNS challenges')
-
-    def _remove_dns_challenges(self, zone_name, zone_key, challenges):
-        updates = ['update delete _acme-challenge.{host} 300 TXT "{response}"'.format(host=challenges[domain_name].identifier,
-                                                                                      response=challenges[domain_name].response)
-                   for domain_name in challenges]
-        self._update_zone(updates, zone_name, zone_key, 'Remove DNS challenges')
-
-    def _set_tlsa_records(self, zone_name, zone_key, tlsa_records: Iterable[TLSAData]):
-        usage = {'pkix-ta': '0', 'pkix-ee': '1', 'dane-ta': '2', 'dane-ee': '3'}
-        updates = []
-        name_server = get_primary_name_server(zone_name)
-        if not name_server:
-            return
-        for tlsa_data in tlsa_records:
-            host_name = zone_name if ('@' == tlsa_data.host) else (tlsa_data.host + '.' + zone_name)
-            if tlsa_data.usage in usage:
-                usage_id = usage[tlsa_data.usage]
-            else:
-                log.warning('Unknown TLSA usage %s', tlsa_data.usage)
-                usage_id = usage['pkix-ee']
-            if 'cert' == tlsa_data.selector:
-                if tlsa_data.usage in ('pkix-ee', 'dane-ee'):
-                    certificates = [certificate_bytes(certificate) for certificate in tlsa_data.certificates]
-                else:
-                    certificates = [certificate_bytes(certificate) for certificate in tlsa_data.chain]
-                keys = []
-            else:
-                certificates = []
-                if tlsa_data.usage in ('pkix-ee', 'dane-ee'):
-                    keys = [public_key_bytes(private_key) for private_key in tlsa_data.private_keys]
-                else:
-                    keys = [certificate_public_key_bytes(certificate) for certificate in tlsa_data.chain]
-
-            record_name = '_{port}._{protocol}.{host}.'.format(host=host_name, port=tlsa_data.port, protocol=tlsa_data.protocol)
-            records = []
-            record_bytes = set()
-            for cert_bytes in certificates:
-                if cert_bytes and cert_bytes not in record_bytes:  # dedupe chain certificates (may be shared between key types)
-                    record_bytes.add(cert_bytes)
-                    records.append('{usage} 0 1 {digest}'.format(usage=usage_id, digest=hashlib.sha256(cert_bytes).hexdigest()))
-                    records.append('{usage} 0 2 {digest}'.format(usage=usage_id, digest=hashlib.sha512(cert_bytes).hexdigest()))
-            for key_bytes in keys:
-                if key_bytes and key_bytes not in record_bytes:  # dedupe chain certificates (may be shared between key types)
-                    record_bytes.add(key_bytes)
-                    records.append('{usage} 1 1 {digest}'.format(usage=usage_id, digest=hashlib.sha256(key_bytes).hexdigest()))
-                    records.append('{usage} 1 2 {digest}'.format(usage=usage_id, digest=hashlib.sha512(key_bytes).hexdigest()))
-
-            if set(records) == set(lookup_tlsa_records(name_server, host_name, tlsa_data.port, tlsa_data.protocol)):
-                log.debug('TLSA records already present for %s', record_name)
-                continue
-
-            updates.append('update delete {record_name} {ttl} TLSA'.format(record_name=record_name, ttl=tlsa_data.ttl))
-            for record in records:
-                updates.append('update add {record_name} {ttl} TLSA {record}'.format(record_name=record_name, record=record, ttl=tlsa_data.ttl))
-        if updates:
-            self._update_zone(updates, zone_name, zone_key, 'Set TLSA')
-
-    def _remove_tlsa_records(self, zone_name, zone_key, tlsa_records):
-        updates = []
-        for tlsa_data in tlsa_records:
-            host_name = zone_name if ('@' == tlsa_data.host) else (tlsa_data.host + '.' + zone_name)
-            updates.append('update delete _{port}._{proto}.{host}. TLSA'.format(port=tlsa_data.port, proto=tlsa_data.protocol, host=host_name))
-        self._update_zone(updates, zone_name, zone_key, 'Remove TLSA')
 
     def update_certificate(self, certificate_name: str):
         self.updated_certificates.add(certificate_name)
@@ -684,7 +602,7 @@ class AcmeManager(object):
             return True  # so if no http challenge, presume this is a wildcard auth
         return False
 
-    def _handle_authorizations(self, order, fetch_only, domain_names):
+    def _handle_authorizations(self, order, fetch_only, domain_names: List[str]):
         authorization_resources = {}
 
         for authorization_resource in order.authorizations:
@@ -702,85 +620,30 @@ class AcmeManager(object):
 
         # set challenge responses
         challenge_types = {}
-        challenge_dns_responses = {}
         challenge_http_responses = {}
-        for zone_name in domain_names:
-            zone_responses = {}
-            for domain_name in domain_names[zone_name]:
-                if domain_name in authorization_resources:
-                    authorization_resource = authorization_resources[domain_name]
-                    identifier = authorization_resource.body.identifier.value
-                    http_challenge_directory = self.config.http_challenge_directory(identifier, zone_name)
-                    if http_challenge_directory:
-                        challenge_types[domain_name] = 'http-01'
-                        challenge = self._get_challenge(authorization_resource, challenge_types[domain_name])
-                        if not challenge:
-                            log.warning('Unable to use http-01 challenge for %s', domain_name)
-                            continue
-                        challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
-                        log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
-                        try:
-                            with open_file(challenge_file_path, 'w', 0o644) as challenge_file:
-                                challenge_file.write(challenge.validation(self.client_key))
-                            challenge_http_responses[domain_name] = challenge_file_path
-                            self._add_hook('set_http_challenge', domain=domain_name, challenge_file=challenge_http_responses[domain_name])
-                        except Exception as error:
-                            log.warning('Unable to create acme-challenge file "%s": %s', challenge_file_path, str(error))
-                    else:
-                        challenge_types[domain_name] = 'dns-01'
-                        challenge = self._get_challenge(authorization_resource, challenge_types[domain_name])
-                        if not challenge:
-                            log.warning('Unable to use dns-01 challenge for %s', domain_name)
-                            continue
-                        response = challenge.validation(self.client_key)
-                        zone_responses[domain_name] = ChallengeTuple(identifier, response)
-                        log.debug('Setting DNS for _acme-challenge.%s = "%s"', domain_name, response)
-                        self._add_hook('set_dns_challenge', zone=zone_name, domain=domain_name, challenge=response)
-            if zone_responses:
-                zone_key = self.config.zone_key(zone_name)
-                if zone_key:
-                    if self._set_dns_challenges(zone_name, zone_key, zone_responses):
-                        challenge_dns_responses[zone_name] = zone_responses
-                else:
-                    try:
-                        with open_file(self.config.filepath('challenge', zone_name), 'w', 0o644) as challenge_file:
-                            json.dump({domain_name: response.response for domain_name, response in zone_responses.items()}, challenge_file)
-                        challenge_dns_responses[zone_name] = zone_responses
-                    except Exception as error:
-                        log.warning('Unable to create acme-challenge file for zone %s: %s', zone_name, str(error))
-                    if zone_name in challenge_dns_responses:
-                        self._reload_zone(zone_name)
-                self._add_hook('dns_zone_update', zone=zone_name)
-            self._call_hooks()
-
-        # wait for DNS propagation
-        waiting = []
-        for zone_name in challenge_dns_responses:
-            name_servers = get_name_servers(zone_name)
-            log.debug('Got name servers "%s" for %s', name_servers, zone_name)
-            for name_server in name_servers:
-                waiting += [DNSTuple(datetime.datetime.now(), name_server, domain_name,
-                                     challenge_dns_responses[zone_name][domain_name].identifier, challenge_dns_responses[zone_name][domain_name].response, 0)
-                            for domain_name in challenge_dns_responses[zone_name]]
-        while waiting:
-            when, name_server, domain_name, identifier, response, attempt_count = heapq.heappop(waiting)
-            now = datetime.datetime.now()
-            if now < when:
-                seconds = (when - now).seconds
-                if 0 < seconds:
-                    time.sleep(seconds)
-            dns_challenges = lookup_dns_challenge(name_server, identifier)
-            if response in dns_challenges:
-                log.debug('Challenge present for %s at %s', domain_name, name_server)
-            else:
-                log.debug('Challenge missing for %s at %s', domain_name, name_server)
-                if attempt_count < self.config.int('max_dns_lookup_attempts'):
-                    heapq.heappush(waiting, DNSTuple(datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('dns_lookup_delay')),
-                                                     name_server, domain_name, identifier, response, attempt_count + 1))
-                else:
-                    log.warning('Maximum attempts reached waiting for DNS challenge %s at %s', domain_name, name_server)
-        if challenge_dns_responses:
-            time.sleep(2)
+        for domain_name in domain_names:
+            if domain_name in authorization_resources:
+                authorization_resource = authorization_resources[domain_name]
+                identifier = authorization_resource.body.identifier.value
+                http_challenge_directory = self.config.http_challenge_directory(identifier)
+                if not http_challenge_directory:
+                    log.warning("no http_challenge_directory directory specified for domain %s", domain_name)
+                    continue
+                challenge_types[domain_name] = 'http-01'
+                challenge = self._get_challenge(authorization_resource, challenge_types[domain_name])
+                if not challenge:
+                    log.warning('Unable to use http-01 challenge for %s', domain_name)
+                    continue
+                challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
+                log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
+                try:
+                    with open_file(challenge_file_path, 'w', 0o644) as challenge_file:
+                        challenge_file.write(challenge.validation(self.client_key))
+                    challenge_http_responses[domain_name] = challenge_file_path
+                    self._add_hook('set_http_challenge', domain=domain_name, challenge_file=challenge_http_responses[domain_name])
+                except Exception as error:
+                    log.warning('Unable to create acme-challenge file "%s": %s', challenge_file_path, str(error))
+        self._call_hooks()
 
         # answer challenges
         for domain_name in authorization_resources:
@@ -839,19 +702,6 @@ class AcmeManager(object):
             else:
                 log.error('Unexpected status "%s"', authorization_resource.body.status)
 
-        # clear challenge responses
-        for zone_name in challenge_dns_responses:
-            log.debug('Removing DNS _acme-challenges for %s', zone_name)
-            for domain_name, challenge in challenge_dns_responses[zone_name].items():
-                self._add_hook('clear_dns_challenge', zone=zone_name, domain=domain_name, challenge=challenge.response)
-            zone_key = self.config.zone_key(zone_name)
-            if zone_key:
-                self._remove_dns_challenges(zone_name, zone_key, challenge_dns_responses[zone_name])
-            else:
-                os.remove(self.config.filepath('challenge', zone_name))
-                self._reload_zone(zone_name)
-            self._add_hook('dns_zone_update', zone=zone_name)
-
         for domain_name in challenge_http_responses:
             log.debug('Removing http acme-challenge for %s', domain_name)
             self._add_hook('clear_http_challenge', domain=domain_name, challenge_file=challenge_http_responses[domain_name])
@@ -865,7 +715,7 @@ class AcmeManager(object):
 
         order.update(authorizations=[authorization_resource for authorization_resource in authorization_resources.values()])
 
-    def _create_auth_order(self, domain_names):
+    def _create_auth_order(self, domain_names: List[str]):
         if 1 == self.acme_client.acme_version:
             authorizations = []
             for domain_name in domain_names:
@@ -902,38 +752,32 @@ class AcmeManager(object):
         return None
 
     def process_authorizations(self, private_key_names=None):
-        domain_names = collections.OrderedDict()
+        domain_names = []
 
         # gather domain names from all specified certtificates
         for private_key_name, pk_spec in self.config.private_keys.items():
             if private_key_names and (private_key_name not in private_key_names):
                 continue
             for certificate_name, cert_spec in pk_spec.certificates.items():
-                for zone_name, hosts in cert_spec.zones.items():
-                    if zone_name not in domain_names:
-                        domain_names[zone_name] = []
-                    for domain_name in hosts:
-                        if domain_name not in domain_names[zone_name]:
-                            domain_names[zone_name].append(domain_name)
+                for domain_name in cert_spec.alt_names:
+                    if domain_name not in domain_names:
+                        domain_names.append(domain_name)
 
         # gather domain names from authorizations
         for zone_name, hosts in self.config.authorizations.items():
-            if zone_name not in domain_names:
-                domain_names[zone_name] = []
             for domain_name in hosts:
-                if domain_name not in domain_names[zone_name]:
-                    domain_names[zone_name].append(domain_name)
+                if domain_name not in domain_names:
+                    domain_names.append(domain_name)
 
         authorization_groups = []
-        for zone_name in domain_names:
-            for host_name in domain_names[zone_name]:
-                for authorization_host_names in authorization_groups:
-                    if ((len(authorization_host_names) < self.config.int('max_domains_per_order'))
-                            and not host_in_list(host_name, authorization_host_names)):
-                        authorization_host_names.append(host_name)
-                        break
-                else:
-                    authorization_groups.append([host_name])
+        for host_name in domain_names:
+            for authorization_host_names in authorization_groups:
+                if ((len(authorization_host_names) < self.config.int('max_domains_per_order'))
+                        and not host_in_list(host_name, authorization_host_names)):
+                    authorization_host_names.append(host_name)
+                    break
+            else:
+                authorization_groups.append([host_name])
 
         for authorization_host_names in authorization_groups:
             order = self._create_auth_order(authorization_host_names)
@@ -948,7 +792,6 @@ class AcmeManager(object):
         return order.update(body=body), response
 
     def process_certificates(self, auth_fetch_only, private_key_names=None):
-        updated_key_zones = set()
         processed_keys = []
 
         for private_key_name, pk_spec in self.config.private_keys.items():
@@ -1047,7 +890,7 @@ class AcmeManager(object):
                             certificate_common_name = existing_certificate.get_subject().commonName
                             if cert_spec.common_name != certificate_common_name:
                                 log.info('Common name changed for %s certificate %s from %s to %s', key_type.upper(), certificate_name,
-                                             certificate_common_name, cert_spec.common_name)
+                                         certificate_common_name, cert_spec.common_name)
                             else:
                                 certificate_alt_names = get_alt_names(existing_certificate)
                                 new_alt_names = set(cert_spec.alt_names)
@@ -1058,7 +901,7 @@ class AcmeManager(object):
                                     added = ', '.join([alt_name for alt_name in cert_spec.alt_names if (alt_name in added_alt_names)])
                                     removed = ', '.join([alt_name for alt_name in certificate_alt_names if (alt_name in removed_alt_names)])
                                     log.info('Alt names changed for %s certificate %s%s%s', key_type.upper(), certificate_name,
-                                                 (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
+                                             (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
                                 else:
                                     if not private_key_matches_certificate(keys[key_type].key, existing_certificate):
                                         log.info('%s certificate %s public key does not match private key', key_type.upper(), certificate_name)
@@ -1067,34 +910,31 @@ class AcmeManager(object):
                                         cert_has_must_staple = has_oscp_must_staple(existing_certificate)
                                         if cert_has_must_staple != cert_spec.ocsp_must_staple:
                                             log.info('%s certificate %s %s ocsp_must_staple option',
-                                                         key_type.upper(), certificate_name, 'has' if cert_has_must_staple else 'does not have')
+                                                     key_type.upper(), certificate_name, 'has' if cert_has_must_staple else 'does not have')
                                         else:
                                             valid_duration = (datetime_from_asn1_generaltime(existing_certificate.get_notAfter()) - datetime.datetime.utcnow())
                                             if valid_duration.days < 0:
                                                 log.info('%s certificate %s has expired', key_type.upper(), certificate_name)
                                             elif valid_duration.days < self.config.int('renewal_days'):
                                                 log.info('%s certificate %s will expire in %s', key_type.upper(), certificate_name,
-                                                             (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
+                                                         (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
                                             else:
                                                 log.debug('%s certificate %s valid beyond renewal window', key_type.upper(), certificate_name)
                                                 days_to_renew = valid_duration.days - self.config.int('renewal_days')
                                                 log.debug('%s certificate due for renewal in %s %s', key_type.upper(), days_to_renew,
-                                                              'day' if (1 == days_to_renew) else 'days')
+                                                          'day' if (1 == days_to_renew) else 'days')
                                                 continue
                     issue_certificate_key_types.append(key_type)
 
-                domain_names = collections.OrderedDict()
-                for zone_name, hosts in cert_spec.zones.items():
-                    if zone_name not in domain_names:
-                        domain_names[zone_name] = []
-                    for domain_name in hosts:
-                        if domain_name not in domain_names[zone_name]:
-                            domain_names[zone_name].append(domain_name)
+                domain_names = []
+                for domain_name in cert_spec.alt_names:
+                    if domain_name not in domain_names:
+                        domain_names.append(domain_name)
 
                 for key_type in issue_certificate_key_types:
                     csr_pem = generate_csr(keys[key_type].key, cert_spec.common_name, cert_spec.alt_names, cert_spec.ocsp_must_staple)
                     log.info('Requesting %s certificate for %s%s', key_type.upper(), cert_spec.common_name,
-                                 (' with alt names: ' + ', '.join(cert_spec.alt_names)) if cert_spec.alt_names else '')
+                             (' with alt names: ' + ', '.join(cert_spec.alt_names)) if cert_spec.alt_names else '')
                     try:
                         order = self.acme_client.new_order(csr_pem)
                         self._handle_authorizations(order, auth_fetch_only, domain_names)
@@ -1114,7 +954,7 @@ class AcmeManager(object):
                             break
                         continue
 
-                        log.debug('New %s certificate issued', key_type.upper())
+                    log.debug('New %s certificate issued', key_type.upper())
                     issued_certificates.append(CertificateData(certificate_name, key_type, certificate, chain, cert_spec))
 
             processed_keys.append(PrivateKeyData(private_key_name, pk_spec.key_options, keys, backup_keys,
@@ -1295,10 +1135,6 @@ class AcmeManager(object):
                         cert_spec = pk_spec.certificates[certificate_name]
                         self.update_services(cert_spec.services)
                         self.update_certificate(certificate_name)
-                        if not self.config.bool('follower_mode'):
-                            for zone_name in cert_spec.zones:
-                                if not self.config.zone_key(zone_name):
-                                    updated_key_zones.add(zone_name)
                 if generated_backup_key:  # reload services for all certificates
                     for certificate_name, cert_spec in pk_spec.certificates.items():
                         self.update_services(cert_spec.services)
@@ -1308,13 +1144,7 @@ class AcmeManager(object):
                 log.warning('Unable to install keys and certificates for %s: %s', private_key_name, str(error))
                 self._clear_hooks()
 
-        for zone_name in updated_key_zones:
-            self._reload_zone(zone_name, critical=False)
-
     def revoke_certificates(self, private_key_names):
-        updated_key_zones = set()
-        updated_tlsa_zones = collections.OrderedDict()
-
         for private_key_name in private_key_names:
             if private_key_name in self.config.private_keys:
                 pk_spec = self.config.private_keys[private_key_name]
@@ -1335,7 +1165,6 @@ class AcmeManager(object):
                             log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
 
                 archive_date = datetime.datetime.now()
-                processed_tlsa = set()
                 for certificate_name, key_type in revoked_certificates:
                     cert_spec = pk_spec.certificates[certificate_name]
                     self.archive_certificate('certificate', certificate_name, key_type, archive_name=private_key_name, archive_date=archive_date)
@@ -1346,79 +1175,11 @@ class AcmeManager(object):
                     for ct_log_name in cert_spec.ct_submit_logs:
                         self.archive_sct(certificate_name, key_type, ct_log_name, archive_name=private_key_name, archive_date=archive_date)
 
-                    if not self.config.bool('follower_mode'):
-                        for zone_name in cert_spec.zones:
-                            if not self.config.zone_key(zone_name):
-                                updated_key_zones.add(zone_name)
-                    if certificate_name not in processed_tlsa:
-                        processed_tlsa.add(certificate_name)
-
-                        tlsa_records = cert_spec.tlsa_records
-                        for zone_name in tlsa_records:
-                            if self.config.zone_key(zone_name):
-                                if zone_name not in updated_tlsa_zones:
-                                    updated_tlsa_zones[zone_name] = []
-                                updated_tlsa_zones[zone_name] += tlsa_data(get_list(tlsa_records, zone_name))
-                            else:
-                                log.warning('No update key configured for zone %s, unable to remove TLSA records', zone_name)
-
                 if len(revoked_certificates) == certificate_count:
                     for key_type in pk_spec.key_types:
                         self.archive_private_key('private_key', private_key_name, key_type, archive_name=private_key_name, archive_date=archive_date)
             else:
                 log.warning('%s is not a configured private key', private_key_name)
-
-        for zone_name in updated_key_zones:
-            self._reload_zone(zone_name, critical=False)
-        for zone_name in updated_tlsa_zones:
-            self._remove_tlsa_records(zone_name, self.config.zone_key(zone_name), updated_tlsa_zones[zone_name])
-
-    def update_tlsa_records(self, private_key_names):
-        tlsa_zones = collections.OrderedDict()
-
-        root_certificates = list(self.load_root_certificates().values())
-
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
-                continue
-
-            keys = []
-            key_cipher_data = self.key_cipher_data(private_key_name)
-            try:
-                for key_type in pk_spec.key_types:
-                    keys.append((key_type, self.load_private_key('private_key', private_key_name, key_type, key_cipher_data).key))
-                    keys.append((key_type, self.load_private_key('backup_key', private_key_name, key_type, key_cipher_data).key))
-            except PrivateKeyError as error:
-                log.warning('Unable to load private key: %s', str(error))
-                continue
-
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                tlsa_records = cert_spec.tlsa_records
-                if tlsa_records:
-                    certificates = []
-                    chain = []
-                    for key_type in cert_spec.key_types:
-                        certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        if not certificate:
-                            log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
-                            continue
-                        certificates.append(certificate)
-                        chain += self.load_chain(certificate_name, key_type)
-
-                    for zone_name in tlsa_records:
-                        if self.config.zone_key(zone_name):
-                            if zone_name not in tlsa_zones:
-                                tlsa_zones[zone_name] = []
-                            tlsa_zones[zone_name] += tlsa_data(get_list(tlsa_records, zone_name), certificates=certificates,
-                                                               chain=(chain + root_certificates),
-                                                               private_keys=[key for key_type, key in keys if (key_type in cert_spec.key_types)])
-                        else:
-                            log.warning('No update key configured for zone %s, unable to set TLSA records', zone_name)
-
-        for zone_name in tlsa_zones:
-            self._set_tlsa_records(zone_name, self.config.zone_key(zone_name), tlsa_zones[zone_name])
-            self._add_hook('dns_zone_update', zone=zone_name)
-        self._call_hooks()
 
     def update_signed_certificate_timestamps(self, private_key_names):
         if not self.config.directory('sct'):
@@ -1439,11 +1200,11 @@ class AcmeManager(object):
                                 sct_data = self.fetch_sct(ct_log_name, certificate, chain)
                                 if sct_data:
                                     log.debug('%s has SCT for %s certificate %s at %s', ct_log_name, key_type.upper(),
-                                                  certificate_name, self._sct_datetime(sct_data.timestamp).isoformat())
+                                              certificate_name, self._sct_datetime(sct_data.timestamp).isoformat())
                                     existing_sct_data = self.load_sct(certificate_name, key_type, ct_log_name)
                                     if sct_data and ((not existing_sct_data) or (sct_data != existing_sct_data)):
                                         log.info('Saving Signed Certificate Timestamp for %s certificate %s from %s', key_type.upper(), certificate_name,
-                                                     ct_log_name)
+                                                 ct_log_name)
                                         transactions.append(self.save_sct(certificate_name, key_type, ct_log_name, sct_data))
                                         self._add_hook('sct_installed', key_name=private_key_name, key_type=key_type,
                                                        certificate_name=certificate_name, ct_log_name=ct_log_name,
@@ -1488,7 +1249,7 @@ class AcmeManager(object):
                             and (ocsp_response_serial_number(ocsp_response) == asn1crypto_certificate.serial_number)):
                         last_update = ocsp_response_this_update(ocsp_response)
                         log.debug('Have stapled OCSP response for %s certificate %s updated at %s',
-                                      key_type.upper(), certificate_name, last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                                  key_type.upper(), certificate_name, last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
                     else:
                         last_update = None
 
@@ -1525,11 +1286,11 @@ class AcmeManager(object):
                                     ocsp_status = ocsp_response_status(ocsp_response)
                                     this_update = ocsp_response_this_update(ocsp_response)
                                     log.debug('Retrieved OCSP status "%s" for %s certificate %s from %s updated at %s', ocsp_status.upper(),
-                                                  key_type.upper(), certificate_name, ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                                              key_type.upper(), certificate_name, ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
                                     if 'good' == ocsp_status.lower():
                                         if this_update == last_update:
                                             log.debug('OCSP response for %s certificate %s from %s has not been updated',
-                                                          key_type.upper(), certificate_name, ocsp_url)
+                                                      key_type.upper(), certificate_name, ocsp_url)
                                             break
                                         log.info('Saving OCSP response for %s certificate %s from %s', key_type.upper(), certificate_name, ocsp_url)
                                         transactions.append(self.save_ocsp_response(certificate_name, key_type, ocsp_response))
@@ -1541,10 +1302,10 @@ class AcmeManager(object):
                                         break
                                     else:
                                         log.warning('%s certificate %s has OCSP status "%s" from %s updated at %s', key_type.upper(), certificate_name,
-                                                        ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                                                    ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
                                 else:
                                     log.warning('%s certificate %s: OCSP request received "%s" from %s', key_type.upper(), certificate_name,
-                                                    ocsp_response['response_status'].native, ocsp_url)
+                                                ocsp_response['response_status'].native, ocsp_url)
                             elif ocsp_response is False:
                                 log.debug('OCSP response for %s certificate %s from %s has not been updated', key_type.upper(), certificate_name, ocsp_url)
                                 break
@@ -1593,15 +1354,15 @@ class AcmeManager(object):
                     log.warning('ERROR: %s certificate "%s" mismatch on %s', key_type.upper(), installed_certificate.get_subject().commonName, host_desc)
                 if len(chain) != len(installed_chain):
                     log.warning('ERROR: %s certificate chain length mismatch on %s, got %s intermediate(s), expected %s', key_type.upper(), host_desc,
-                                    len(installed_chain), len(chain))
+                                len(installed_chain), len(chain))
                 else:
                     for intermediate, installed_intermediate in zip(chain, installed_chain):
                         if certificates_match(intermediate, installed_intermediate):
                             log.info('Intermediate %s certificate "%s" present on %s', key_type.upper(), intermediate.get_subject().commonName, host_desc,
-                                         extra={'color': 'green'})
+                                     extra={'color': 'green'})
                         else:
                             log.warning('ERROR: Intermediate %s certificate "%s" mismatch on %s', key_type.upper(),
-                                            installed_intermediate.get_subject().commonName, host_desc)
+                                        installed_intermediate.get_subject().commonName, host_desc)
                 if ocsp_staple:
                     ocsp_status = ocsp_response_status(ocsp_staple)
                     if 'good' == ocsp_status.lower():
@@ -1670,8 +1431,8 @@ class AcmeManager(object):
                 return ''
 
             log.debug('Waiting for %s%s%s',
-                         _plural(int(delay_seconds / 3600), 'hour'), _plural(int((delay_seconds % 3600) / 60), 'minute'),
-                         _plural((delay_seconds % 60), 'second'))
+                      _plural(int(delay_seconds / 3600), 'hour'), _plural(int((delay_seconds % 3600) / 60), 'minute'),
+                      _plural((delay_seconds % 60), 'second'))
             time.sleep(delay_seconds)
             if process_running(pid_file_path):
                 log.debug('Waiting for other running client instance')
@@ -1684,10 +1445,9 @@ class AcmeManager(object):
             pid_file.write(str(os.getpid()))
         try:
             if (not (
-                    self.args.revoke or self.args.auth or self.args.certs or self.args.tlsa or self.args.sct or self.args.ocsp or self.args.symlink or self.args.verify)):
+                    self.args.revoke or self.args.auth or self.args.certs or self.args.sct or self.args.ocsp or self.args.symlink or self.args.verify)):
                 self.args.auth = True
                 self.args.certs = True
-                self.args.tlsa = True
                 self.args.sct = True
                 self.args.ocsp = True
                 self.args.symlink = True
@@ -1705,8 +1465,6 @@ class AcmeManager(object):
                 self.process_authorizations(self.args.private_key_names)
             if self.args.certs:
                 self.process_certificates(self.config.bool('follower_mode'), self.args.private_key_names)
-            if self.args.tlsa:
-                self.update_tlsa_records(self.args.private_key_names)
             if self.args.sct:
                 self.update_signed_certificate_timestamps(self.args.private_key_names)
             if self.args.ocsp:

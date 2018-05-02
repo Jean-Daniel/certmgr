@@ -1,10 +1,10 @@
+import json
+import os
 import tempfile
 from collections import OrderedDict
 from typing import Iterable, Optional, Dict, List, Tuple
 
 import collections
-import json
-import os
 
 from . import AcmeError, log
 from .utils import FileTransaction, get_device_id, host_in_list
@@ -96,9 +96,9 @@ class PrivateKeySpec(object):
 
 
 class CertificateSpec(object):
-    __slots__ = ('common_name', 'alt_names', 'zones',
+    __slots__ = ('common_name', 'alt_names',
                  'key_types', 'services', 'dhparam_size', 'ecparam_curve',
-                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'tlsa_records')
+                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
     def __init__(self, name, spec, key_types, defaults):
         self.common_name = spec.get('common_name', name).strip().lower()
@@ -112,12 +112,9 @@ class CertificateSpec(object):
             del alt_names['@']
 
         # flatten alt_names
-        self.zones = {}
         self.alt_names = []
         for zone_name, names in alt_names.items():
-            hosts = _get_domain_names(zone_name, names)
-            self.zones[zone_name] = hosts
-            self.alt_names += hosts
+            self.alt_names.extend(_get_domain_names(zone_name, names))
 
         if self.common_name not in self.alt_names:
             raise AcmeError('[config] Certificate common name "{}" not listed in alt_names in certificate "{}"', self.common_name, name)
@@ -134,7 +131,6 @@ class CertificateSpec(object):
 
         self.ct_submit_logs = get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs'])
         self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
-        self.tlsa_records = spec.get('tlsa_records', {})
 
 
 class Configuration(object):
@@ -183,8 +179,6 @@ class Configuration(object):
                     cfg._parse_certificates(values)
                 elif section == 'private_keys':
                     cfg._parse_private_keys(values)
-                elif section == 'zone_update_keys':
-                    cfg.zone_update_keys = values
                 elif section == 'authorizations':
                     cfg._parse_authorizations(values)
                 else:
@@ -214,8 +208,6 @@ class Configuration(object):
             'renewal_days': 30,
             'expiration_days': 730,
             'auto_rollover': False,
-            'max_dns_lookup_attempts': 30,
-            'dns_lookup_delay': 10,
             'max_domains_per_order': 100,
             'max_authorization_attempts': 30,
             'authorization_delay': 10,
@@ -225,8 +217,6 @@ class Configuration(object):
             'min_run_delay': 300,
             'max_run_delay': 3600,
             'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
-            'reload_zone_command': '/etc/bind/reload-zone.sh',
-            'nsupdate_command': '/usr/bin/nsupdate',
             'verify': None
         }
         self.directories = {
@@ -265,9 +255,6 @@ class Configuration(object):
             'sct': '{ct_log_name}.sct'
         }
         self.hooks = {
-            'set_dns_challenge': None,
-            'clear_dns_challenge': None,
-            'dns_zone_update': None,
             'set_http_challenge': None,
             'clear_http_challenge': None,
             'private_key_rollover': None,
@@ -345,7 +332,6 @@ class Configuration(object):
             }
         }
         self.private_keys = OrderedDict()  # type: Dict[str, PrivateKeySpec]
-        self.zone_update_keys = {}
         self.authorizations = {}
 
     def get(self, item: str, default=None):
@@ -373,11 +359,10 @@ class Configuration(object):
     def directory(self, file_type: str) -> Optional[str]:
         return self.directories[file_type]
 
-    def http_challenge_directory(self, domain_name: str, zone_name: str) -> Optional[str]:
+    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
         http_challenge_directory = self.directory('http_challenge')
         if http_challenge_directory and '{' in http_challenge_directory:
-            host_name = domain_name[0:-len(zone_name)].strip('.') or '.'
-            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name, zone=zone_name, host=host_name)
+            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
         return http_challenge_directory
 
     def hook(self, hook_name: str):
@@ -388,17 +373,6 @@ class Configuration(object):
 
     def service(self, service_name: str) -> Optional[str]:
         return self.services[service_name]
-
-    def zone_key(self, zone_name: str):
-        key_data = self.zone_update_keys.get(zone_name)
-        if key_data:
-            if isinstance(key_data, str):
-                return {'file': os.path.join(self.directory('update_key'), key_data)}
-            if 'file' in key_data:
-                key_data = key_data.copy()
-                key_data['file'] = os.path.join(self.directory('update_key'), key_data['file'])
-                return key_data
-        return None
 
     def _parse_certificates(self, certificates: dict):
         # convert bare certificate definitions to private key definitions
