@@ -6,3 +6,5 @@ acme*.json
 *.zip
 *.orig
 *.sublime-*
+
+__pycache__
