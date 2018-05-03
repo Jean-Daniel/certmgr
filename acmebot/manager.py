@@ -16,19 +16,22 @@ import sys
 import time
 import urllib
 from logging import FileHandler, StreamHandler
+from typing import Dict
 from typing import List, Optional
 
 import OpenSSL
 import collections
 import josepy
 import pkg_resources
+from OpenSSL.crypto import X509, PKey
 from acme import client, messages
 from asn1crypto import ocsp as asn1_ocsp
 from asn1crypto import x509 as asn1_x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from . import PrivateKeyError, log
+from acmebot.config import CertificateSpec
+from . import PrivateKeyError, log, AcmeError
 from .config import Configuration
 from .crypto import save_chain, check_dhparam, check_ecparam, certificate_bytes, save_certificate, private_key_matches_options, private_key_descripton, \
     generate_private_key, get_alt_names, private_key_matches_certificate, has_oscp_must_staple, \
@@ -39,12 +42,40 @@ from .utils import FileTransaction, makedir, open_file, ColorFormatter, rename_f
 ChallengeTuple = collections.namedtuple('ChallengeTuple', ['identifier', 'response'])
 AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'domain_name', 'authorization_resource'])
 
-KeyData = collections.namedtuple('KeyData', ['key', 'timestamp'])
 SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
-PrivateKeyData = collections.namedtuple('PrivateKeyData', ['name', 'key_options', 'keys', 'backup_keys',
-                                                           'generated_key', 'rolled_key', 'changed_key', 'issued_certificates'])
+
 KeyCipherData = collections.namedtuple('KeyCipherData', ['cipher', 'passphrase', 'forced'])
-CertificateData = collections.namedtuple('CertificateData', ['certificate_name', 'key_type', 'certificate', 'chain', 'config'])
+
+
+class CertParams(object):
+    __slots__ = ('dhparams', 'ecparams')
+
+    def __init__(self, dhparams: Optional[str], ecparams: Optional[str]):
+        self.dhparams = dhparams
+        self.ecparams = ecparams
+
+
+class CertificateItem(object):
+    __slots__ = ('updated', 'key', 'chain', 'certificate')
+
+    def __init__(self):
+        self.updated = False
+
+        self.key = None  # type: PKey
+        self.chain = None
+        self.certificate = None  # type: X509
+
+
+class CertificateData(object):
+    __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
+
+    def __init__(self, name: str, spec: CertificateSpec):
+        self.name = name
+        self.spec = spec
+
+        self.params = CertParams(None, None)
+        self.params_updated = False
+        self.certificates = {key_type: CertificateItem() for key_type in spec.key_types}  # type: Dict[str, CertificateItem]
 
 
 class AcmeManager(object):
@@ -52,7 +83,7 @@ class AcmeManager(object):
     def __init__(self, script_dir, script_name):
         self.script_dir = script_dir
         self.script_name = script_name
-        self.script_version = '2.2.0'
+        self.script_version = '3.0.0'
 
         argparser = argparse.ArgumentParser(description='ACME Certificate Manager')
         argparser.add_argument('--version', action='version', version='%(prog)s ' + self.script_version)
@@ -70,7 +101,7 @@ class AcmeManager(object):
                                action='store_true', dest='detail', default=False,
                                help='Print more detailed debugging information to stdout')
         argparser.add_argument('--color',
-                               action='store_true', dest='color', default=False,
+                               action='store_true', dest='color', default=True,
                                help='Colorize output')
         argparser.add_argument('--no-color',
                                action='store_true', dest='no_color', default=False,
@@ -83,7 +114,7 @@ class AcmeManager(object):
                                help='Wait for a random time before executing')
         argparser.add_argument('-r', '--rollover',
                                action='store_true', dest='rollover', default=False,
-                               help='Rollover private keys and Diffie-Hellman parameters')
+                               help='Rollover Diffie-Hellman parameters')
         argparser.add_argument('-R', '--renew',
                                action='store_true', dest='renew', default=False,
                                help='Renew certificate regardless of age')
@@ -132,8 +163,10 @@ class AcmeManager(object):
             stream.setFormatter(ColorFormatter())
         log.addHandler(stream)
 
-        if self.args.detail or self.args.verbose:
+        if self.args.detail or self.args.debug:
             log.setLevel(logging.DEBUG)
+        elif self.args.verbose:
+            log.setLevel(logging.INFO)
         else:
             log.setLevel(logging.WARNING)
 
@@ -156,6 +189,7 @@ class AcmeManager(object):
                 log.setLevel(levels[level])
             # if level is None, don't create log file
             if self.config.directory('log') and self.config.filename('log'):
+                makedir(self.config.directory('log'), 0o700)
                 log_file_path = self.config.filepath('log', self.script_name)
                 log.addHandler(FileHandler(log_file_path, encoding='UTF-8'))
 
@@ -219,13 +253,13 @@ class AcmeManager(object):
                 log.warning('Service %s does not have registered reload command', service_name)
         return reloaded
 
-    def key_cipher_data(self, private_key_name, force_prompt=False):
-        if private_key_name in self.key_passphrases:
-            if self.key_passphrases[private_key_name] or (not force_prompt):
-                return self.key_passphrases[private_key_name]
-        pk_spec = self.config.private_keys.get('private_key_name')
-        if pk_spec:
-            passphrase = pk_spec.key_passphrase
+    def key_cipher_data(self, cert_name: str, force_prompt=False):
+        if cert_name in self.key_passphrases:
+            if self.key_passphrases[cert_name] or (not force_prompt):
+                return self.key_passphrases[cert_name]
+        cert_spec = self.config.certificates.get(cert_name)
+        if cert_spec:
+            passphrase = cert_spec.private_key.passphrase
             if (passphrase is True) or (force_prompt and not passphrase):
                 if self.args.passphrase:
                     passphrase = self.args.passphrase[0]
@@ -233,11 +267,11 @@ class AcmeManager(object):
                     passphrase = os.getenv('{script}_PASSPHRASE'.format(script=self.script_name.upper()))
                     if not passphrase:
                         if sys.stdin.isatty():
-                            passphrase = getpass.getpass('Enter private key password for {name}: '.format(name=private_key_name))
+                            passphrase = getpass.getpass('Enter private key password for {name}: '.format(name=cert_name))
                         else:
                             passphrase = sys.stdin.readline().strip()
-            key_cipher_data = KeyCipherData(pk_spec.key_cipher, passphrase, force_prompt) if passphrase else None
-            self.key_passphrases[private_key_name] = key_cipher_data
+            key_cipher_data = KeyCipherData(cert_spec.private_key.cipher, passphrase, force_prompt) if passphrase else None
+            self.key_passphrases[cert_name] = key_cipher_data
             return key_cipher_data
         return None
 
@@ -254,10 +288,10 @@ class AcmeManager(object):
                                                                      key_cipher_data.passphrase.encode('utf-8'))
                     else:
                         private_key = OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, key_pem.encode('ascii'))
-                    return KeyData(private_key, os.stat(key_file_path).st_mtime)
+                    return private_key
             except Exception as e:
-                raise PrivateKeyError(key_file_path) from e
-        return KeyData(None, None)
+                raise AcmeError("private key '{}' loading failed", key_file_path) from e
+        return None
 
     def save_private_key(self, file_type, file_name, key_type, private_key, key_cipher_data,
                          timestamp=None, certificate=None, chain=None, dhparam_pem=None, ecparam_pem=None):
@@ -280,12 +314,6 @@ class AcmeManager(object):
     def archive_private_key(self, file_type, file_name, key_type, archive_name='', archive_date=None):
         self._archive_file(file_type, self.config.filepath(file_type, file_name, key_type), archive_name=archive_name, archive_date=archive_date)
 
-    @staticmethod
-    def _need_to_rollover(backup_key_age, expiration_days):
-        if (backup_key_age is not None) and expiration_days:
-            return expiration_days <= backup_key_age.days
-        return False
-
     def load_certificate(self, file_type, file_name, key_type):
         cert_path = self.config.filepath(file_type, file_name, key_type)
         try:
@@ -294,8 +322,7 @@ class AcmeManager(object):
         except FileNotFoundError:
             return None
         except Exception as e:
-            log.error("Certificate loading failed (%s): %s", cert_path, str(e))
-            return None
+            raise AcmeError("Certificate loading failed ({})", cert_path) from e
 
     def load_root_certificates(self):
         root_certificates = collections.OrderedDict()
@@ -349,7 +376,7 @@ class AcmeManager(object):
                 return ((not dhparam_pem) or (dhparam_pem in params)) and ((not ecparam_pem) or (ecparam_pem in params))
         return False
 
-    def load_params(self, file_name):
+    def load_params(self, file_name) -> CertParams:
         try:
             pem_data = None
             if self.config.directory('param'):
@@ -373,10 +400,10 @@ class AcmeManager(object):
                     dhparam_pem = None
                 if not check_ecparam(ecparam_pem):
                     ecparam_pem = None
-                return dhparam_pem, ecparam_pem
+                return CertParams(dhparam_pem, ecparam_pem)
         except Exception as e:
             log.error("param loading error: %s", str(e))
-        return None, None
+        return CertParams(None, None)
 
     def save_params(self, file_name, dhparam_pem, ecparam_pem):
         with FileTransaction('param', self.config.filepath('param', file_name), chmod=0o640) as transaction:
@@ -516,7 +543,7 @@ class AcmeManager(object):
                 self.client_key = josepy.JWKRSA.fields_from_json(json.load(client_key_file))
             log.debug('Loaded client key %s', client_key_path)
         else:
-            log.info('Client key not present, generating\n')
+            log.info('Client key not present, generating')
             self._generate_client_key()
             generated_client_key = True
 
@@ -556,7 +583,7 @@ class AcmeManager(object):
                     sys.stdout.write('\n')
                     answer = input('Accept? (Y/n) ')
                     if answer and not answer.lower().startswith('y'):
-                        raise Exception('Terms of service rejected.\n')
+                        raise Exception('Terms of service rejected.')
                     log.debug('Terms of service accepted.')
                 else:
                     log.debug('Auto-accepting TOS: %s', tos)
@@ -594,19 +621,11 @@ class AcmeManager(object):
                 return challenge
         return None
 
-    @staticmethod
-    def _is_wildcard_auth(authorization_resource):
-        if hasattr(authorization_resource.body, 'wildcard'):
-            return authorization_resource.body.wildcard
-        if not AcmeManager._get_challenge(authorization_resource, 'http-01'):  # boulder not currently returning the wildcard field
-            return True  # so if no http challenge, presume this is a wildcard auth
-        return False
-
     def _handle_authorizations(self, order, fetch_only, domain_names: List[str]):
         authorization_resources = {}
 
         for authorization_resource in order.authorizations:
-            domain_name = ('*.' if (self._is_wildcard_auth(authorization_resource)) else '') + authorization_resource.body.identifier.value
+            domain_name = authorization_resource.body.identifier.value
             if messages.STATUS_VALID == authorization_resource.body.status:
                 log.debug('%s already authorized', domain_name)
             elif messages.STATUS_PENDING == authorization_resource.body.status:
@@ -751,17 +770,16 @@ class AcmeManager(object):
                     return messages.OrderResource(body=body, uri=response.headers.get('Location'), authorizations=authorizations)
         return None
 
-    def process_authorizations(self, private_key_names=None):
+    def process_authorizations(self, cert_names=None):
         domain_names = []
 
         # gather domain names from all specified certtificates
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if cert_names and (certificate_name not in cert_names):
                 continue
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                for domain_name in cert_spec.alt_names:
-                    if domain_name not in domain_names:
-                        domain_names.append(domain_name)
+            for domain_name in cert_spec.alt_names:
+                if domain_name not in domain_names:
+                    domain_names.append(domain_name)
 
         # gather domain names from authorizations
         for zone_name, hosts in self.config.authorizations.items():
@@ -791,537 +809,397 @@ class AcmeManager(object):
             raise body.error
         return order.update(body=body), response
 
-    def process_certificates(self, auth_fetch_only, private_key_names=None):
-        processed_keys = []
+    def _should_generate_certificate(self, name: str, key_type: str, spec: CertificateSpec, cert_item: CertificateItem):
+        if not cert_item.certificate or not cert_item.key:
+            return True
 
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
+        params = spec.private_key.params(key_type)
+        if not private_key_matches_options(key_type, cert_item.key, params):
+            log.info('Private %s key is not %s', key_type.upper(), private_key_descripton(key_type, params))
+            return True
+
+        certificate_common_name = cert_item.certificate.get_subject().commonName
+        if spec.common_name != certificate_common_name:
+            log.info('Common name changed for %s certificate %s from %s to %s', key_type.upper(), name, certificate_common_name, spec.common_name)
+            return True
+
+        certificate_alt_names = get_alt_names(cert_item.certificate)
+        new_alt_names = set(spec.alt_names)
+        existing_alt_names = set(certificate_alt_names)
+        if new_alt_names != existing_alt_names:
+            added_alt_names = new_alt_names - existing_alt_names
+            removed_alt_names = existing_alt_names - new_alt_names
+            added = ', '.join([alt_name for alt_name in spec.alt_names if (alt_name in added_alt_names)])
+            removed = ', '.join([alt_name for alt_name in certificate_alt_names if (alt_name in removed_alt_names)])
+            log.info('Alt names changed for %s certificate %s%s%s', key_type.upper(), name,
+                     (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
+            return True
+
+        if not private_key_matches_certificate(cert_item.key, cert_item.certificate):
+            log.info('%s certificate %s public key does not match private key', key_type.upper(), name)
+            return True
+
+        cert_has_must_staple = has_oscp_must_staple(cert_item.certificate)
+        if cert_has_must_staple != spec.ocsp_must_staple:
+            log.info('%s certificate %s %s ocsp_must_staple option',
+                     key_type.upper(), name, 'has' if cert_has_must_staple else 'does not have')
+            return True
+
+        valid_duration = (datetime_from_asn1_generaltime(cert_item.certificate.get_notAfter()) - datetime.datetime.utcnow())
+        if valid_duration.days < 0:
+            log.info('%s certificate %s has expired', key_type.upper(), name)
+            return True
+        if valid_duration.days < self.config.int('renewal_days'):
+            log.info('%s certificate %s will expire in %s', key_type.upper(), name,
+                     (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
+            return True
+
+        days_to_renew = valid_duration.days - self.config.int('renewal_days')
+        log.debug('%s certificate %s valid beyond renewal window (renew in %s %s)', key_type.upper(), name,
+                  days_to_renew, 'day' if (1 == days_to_renew) else 'days')
+        return False
+
+    def process_certificates(self, auth_fetch_only, cert_names=None):
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if cert_names and (certificate_name not in cert_names):
                 continue
 
-            log.debug('Processing private key %s', private_key_name)
+            key_cipher_data = self.key_cipher_data(certificate_name)
 
-            expiration_days = pk_spec.expiration_days
+            log.debug('Processing certificate %s', certificate_name)
 
-            rolled_private_key = False
-            generated_private_key = False
-            changed_private_key = False
+            cert_data = CertificateData(certificate_name, cert_spec)
+            # For each types, check if the cert exists and is valid (params match and not about to expire)
+            for key_type in cert_spec.key_types:
+                cert_item = cert_data.certificates[key_type]
+                try:
+                    cert_item.key = self.load_private_key('private_key', certificate_name, key_type, key_cipher_data)
+                except PrivateKeyError as error:
+                    log.warning('Unable to load private key %s: %s', certificate_name, str(error))
+                    continue
 
-            key_cipher_data = self.key_cipher_data(private_key_name)
-            backup_keys = {}
-            youngest_key_timestamp = 0
-            oldest_key_timestamp = sys.maxsize
-            try:
-                for key_type in pk_spec.key_types:
-                    backup_key_data = self.load_private_key('backup_key', private_key_name, key_type, key_cipher_data)
-                    if backup_key_data.timestamp:
-                        youngest_key_timestamp = max(youngest_key_timestamp, backup_key_data.timestamp)
-                        oldest_key_timestamp = min(oldest_key_timestamp, backup_key_data.timestamp)
-                    backup_keys[key_type] = backup_key_data
-            except PrivateKeyError as error:
-                log.warning('Unable to load backup private key %s: %s', private_key_name, str(error))
-                continue
+                cert_item.certificate = self.load_certificate('certificate', certificate_name, key_type)
+                if self._should_generate_certificate(certificate_name, key_type, cert_spec, cert_item):
+                    log.info('Generating primary %s key for %s', key_type.upper(), certificate_name)
+                    cert_item.key = generate_private_key(key_type, cert_spec.private_key.params(key_type))
+                    if not cert_item.key:
+                        raise AcmeError("{} private key generation failed for certificate {}", key_type.upper(), certificate_name)
 
-            if 0 < youngest_key_timestamp:
-                now = datetime.datetime.utcnow()
-                oldest_key_age = (now - datetime.datetime.utcfromtimestamp(oldest_key_timestamp))
-            else:
-                oldest_key_age = None
-
-            def _duration(prefix, days):
-                if 0 < days:
-                    return prefix + ('1 day' if (1 == days) else (str(days) + ' days'))
-                return '' if (0 == days) else (_duration(' ', -days) + ' ago')
-
-            if oldest_key_age is not None:
-                log.debug('Private key due for rollover%s', _duration(' in ', expiration_days - oldest_key_age.days))
-
-            rollover = False
-            if (self.args.rollover
-                    or (pk_spec.auto_rollover and self._need_to_rollover(oldest_key_age, expiration_days))):
-                rollover = True
-
-            try:
-                keys = {key_type: self.load_private_key('private_key', private_key_name, key_type, key_cipher_data) for key_type in pk_spec.key_types}
-            except PrivateKeyError as error:
-                log.warning('Unable to load private key %s: %s', private_key_name, str(error))
-                continue
-
-            for key_type, options in pk_spec.key_options:
-                if keys[key_type].key and not private_key_matches_options(key_type, keys[key_type].key, options):
-                    log.info('Private %s key is not %s', key_type.upper(), private_key_descripton(key_type, options))
-                    keys[key_type] = KeyData(None, None)
-
-            for key_type in pk_spec.key_types:
-                if backup_keys[key_type].key and (rollover or not keys[key_type].key):
-                    keys[key_type] = backup_keys[key_type]
-                    backup_keys[key_type] = KeyData(None, None)
-                    rolled_private_key = True
-                    self._add_hook('private_key_rollover', key_name=private_key_name, key_type=key_type,
-                                   private_key_file=self.config.filepath('private_key', private_key_name, key_type),
-                                   backup_key_file=self.config.filepath('backup_key', private_key_name, key_type),
-                                   passphrase=key_cipher_data.passphrase if key_cipher_data else None)
-            if rolled_private_key:
-                log.info('Private key rolling over for %s', private_key_name)
-
-            if not rolled_private_key and self._need_to_rollover(oldest_key_age, expiration_days):
-                log.info('Backup key for %s has expired. Use "--rollover" to replace.', private_key_name)
-
-            for key_type, options in pk_spec.key_options:
-                if not keys[key_type].key:
-                    log.info('Generating primary %s key for %s', key_type.upper(), private_key_name)
-                    private_key = generate_private_key(key_type, options)
-                    keys[key_type] = KeyData(private_key, None)
-                    if private_key:
-                        generated_private_key = True
-
-            issued_certificates = []
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                log.debug('Processing certificate %s', certificate_name)
-
-                issue_certificate_key_types = []
-                for key_type in cert_spec.key_types:
-                    if (key_type not in keys) or (not keys[key_type].key):
-                        log.warning('No %s private key available for certificate %s', key_type.upper(), certificate_name, '\n')
-                        continue
-
-                    if (not rolled_private_key) and (not self.args.renew):
-                        existing_certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        if existing_certificate:
-                            certificate_common_name = existing_certificate.get_subject().commonName
-                            if cert_spec.common_name != certificate_common_name:
-                                log.info('Common name changed for %s certificate %s from %s to %s', key_type.upper(), certificate_name,
-                                         certificate_common_name, cert_spec.common_name)
-                            else:
-                                certificate_alt_names = get_alt_names(existing_certificate)
-                                new_alt_names = set(cert_spec.alt_names)
-                                existing_alt_names = set(certificate_alt_names)
-                                if new_alt_names != existing_alt_names:
-                                    added_alt_names = new_alt_names - existing_alt_names
-                                    removed_alt_names = existing_alt_names - new_alt_names
-                                    added = ', '.join([alt_name for alt_name in cert_spec.alt_names if (alt_name in added_alt_names)])
-                                    removed = ', '.join([alt_name for alt_name in certificate_alt_names if (alt_name in removed_alt_names)])
-                                    log.info('Alt names changed for %s certificate %s%s%s', key_type.upper(), certificate_name,
-                                             (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
-                                else:
-                                    if not private_key_matches_certificate(keys[key_type].key, existing_certificate):
-                                        log.info('%s certificate %s public key does not match private key', key_type.upper(), certificate_name)
-                                        changed_private_key = True
-                                    else:
-                                        cert_has_must_staple = has_oscp_must_staple(existing_certificate)
-                                        if cert_has_must_staple != cert_spec.ocsp_must_staple:
-                                            log.info('%s certificate %s %s ocsp_must_staple option',
-                                                     key_type.upper(), certificate_name, 'has' if cert_has_must_staple else 'does not have')
-                                        else:
-                                            valid_duration = (datetime_from_asn1_generaltime(existing_certificate.get_notAfter()) - datetime.datetime.utcnow())
-                                            if valid_duration.days < 0:
-                                                log.info('%s certificate %s has expired', key_type.upper(), certificate_name)
-                                            elif valid_duration.days < self.config.int('renewal_days'):
-                                                log.info('%s certificate %s will expire in %s', key_type.upper(), certificate_name,
-                                                         (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
-                                            else:
-                                                log.debug('%s certificate %s valid beyond renewal window', key_type.upper(), certificate_name)
-                                                days_to_renew = valid_duration.days - self.config.int('renewal_days')
-                                                log.debug('%s certificate due for renewal in %s %s', key_type.upper(), days_to_renew,
-                                                          'day' if (1 == days_to_renew) else 'days')
-                                                continue
-                    issue_certificate_key_types.append(key_type)
-
-                domain_names = []
-                for domain_name in cert_spec.alt_names:
-                    if domain_name not in domain_names:
-                        domain_names.append(domain_name)
-
-                for key_type in issue_certificate_key_types:
-                    csr_pem = generate_csr(keys[key_type].key, cert_spec.common_name, cert_spec.alt_names, cert_spec.ocsp_must_staple)
+                    csr_pem = generate_csr(cert_item.key, cert_spec.common_name, cert_spec.alt_names, cert_spec.ocsp_must_staple)
                     log.info('Requesting %s certificate for %s%s', key_type.upper(), cert_spec.common_name,
                              (' with alt names: ' + ', '.join(cert_spec.alt_names)) if cert_spec.alt_names else '')
                     try:
                         order = self.acme_client.new_order(csr_pem)
-                        self._handle_authorizations(order, auth_fetch_only, domain_names)
+                        self._handle_authorizations(order, auth_fetch_only, cert_spec.alt_names)
                         if order.uri:
                             order, response = self._poll_order(order)
                             if messages.STATUS_INVALID == order.body.status:
                                 log.warning('Unable to issue %s certificate %s', key_type.upper(), certificate_name)
                                 continue
-                        order = self.acme_client.finalize_order(order,
-                                                                datetime.datetime.now() + datetime.timedelta(
-                                                                    seconds=self.config.int('cert_poll_time')))
-                        certificate, chain = decode_full_chain(order.fullchain_pem)
+                        order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))
+                        cert_item.certificate, cert_item.chain = decode_full_chain(order.fullchain_pem)
                     except Exception as error:
                         log.warning('%s certificate issuance failed: %s', key_type.upper(), str(error))
-                        if rolled_private_key:
-                            issued_certificates = []  # do not partially install new certificates if private key changed
-                            break
                         continue
 
                     log.debug('New %s certificate issued', key_type.upper())
-                    issued_certificates.append(CertificateData(certificate_name, key_type, certificate, chain, cert_spec))
+                    cert_data.params = CertParams(None, None)
+                    cert_item.updated = True
+                elif not self.args.rollover:
+                    # if we do not force refresh params
+                    cert_data.params = self.load_params(certificate_name)
 
-            processed_keys.append(PrivateKeyData(private_key_name, pk_spec.key_options, keys, backup_keys,
-                                                 generated_private_key, rolled_private_key, changed_private_key, issued_certificates))
+                # Updating dhparams
+                dhparam_size = cert_spec.dhparam_size
+                if cert_data.params.dhparams and dhparam_size and (dhparam_size != get_dhparam_size(cert_data.params.dhparams)):
+                    log.info('Diffie-Hellman parameters for %s are not %s bits', certificate_name, dhparam_size)
+                    cert_data.params.dhparams = None
+                # Remove existing params
+                if cert_data.params.dhparams and not dhparam_size:
+                    cert_data.params.dhparams = None
+                    cert_data.params_updated = True
+                elif (not cert_data.params.dhparams) and dhparam_size:
+                    log.info('Generating Diffie-Hellman parameters for %s', certificate_name)
+                    cert_data.params.dhparams = generate_dhparam(dhparam_size)
+                    if not cert_data.params.dhparams:
+                        raise AcmeError('Diffie-Hellman parameters generation failed for {} bits', dhparam_size)
+                    cert_data.params_updated = True
 
+                # Updating ecparams
+                ecparam_curve = cert_spec.ecparam_curve
+                if cert_data.params.ecparams and ecparam_curve and (ecparam_curve != get_ecparam_curve(cert_data.params.ecparams)):
+                    log.info('Elliptical curve parameters for %s are not curve %s', certificate_name, ecparam_curve)
+                    cert_data.params.ecparams = None
+                # Remove existing params
+                if cert_data.params.ecparams and not ecparam_curve:
+                    cert_data.params.ecparams = None
+                    cert_data.params_updated = True
+                elif (not cert_data.params.ecparams) and ecparam_curve:
+                    log.info('Generating elliptical curve parameters for %s', certificate_name)
+                    cert_data.params.ecparams = generate_ecparam(ecparam_curve)
+                    if not cert_data.params.ecparams:
+                        raise AcmeError('Elliptical curve parameters generation failed for curve {}', ecparam_curve)
+                    cert_data.params_updated = True
+
+            self.install_certificate(cert_data)
+
+    def install_certificate(self, certificate: CertificateData):
         # install keys and certificates
         root_certificates = self.load_root_certificates()
 
-        for private_key_data in processed_keys:
-            private_key_name = private_key_data.name
-            pk_spec = self.config.private_keys[private_key_name]
-            if (not private_key_data.issued_certificates) and (private_key_data.generated_key or private_key_data.rolled_key):
-                log.warning('No certificates issued for private key %s. Skipping key updates', private_key_name)
-                self._clear_hooks()
-                continue
+        certificate_name = certificate.name
+        cert_spec = certificate.spec
 
-            generated_backup_key = False
-            backup_keys = private_key_data.backup_keys
-            for key_type, options in private_key_data.key_options:
-                if not backup_keys[key_type].key:
-                    log.info('Generating backup %s key for %s', key_type.upper(), private_key_name)
-                    backup_keys[key_type] = KeyData(generate_private_key(key_type, options), None)
-                    generated_backup_key = True
+        transactions = []
 
-            transactions = []
+        # dh and ec params
+        dhparams = certificate.params.dhparams
+        ecparams = certificate.params.ecparams
 
-            # save private keys
-            key_cipher_data = self.key_cipher_data(private_key_name)
-            try:
-                for key_type in private_key_data.key_options:
-                    if private_key_data.generated_key or private_key_data.rolled_key:
-                        transactions.append(self.save_private_key('private_key', private_key_name, key_type,
-                                                                  private_key_data.keys[key_type].key, key_cipher_data,
-                                                                  timestamp=private_key_data.keys[key_type].timestamp))
-                        self._add_hook('private_key_installed', key_name=private_key_name, key_type=key_type,
-                                       private_key_file=self.config.filepath('private_key', private_key_name, key_type),
-                                       passphrase=key_cipher_data.passphrase if key_cipher_data else None)
-                    if generated_backup_key:
-                        transactions.append(self.save_private_key('backup_key', private_key_name, key_type,
-                                                                  backup_keys[key_type].key, key_cipher_data,
-                                                                  timestamp=backup_keys[key_type].timestamp))
-                        self._add_hook('backup_key_installed', key_name=private_key_name, key_type=key_type,
-                                       backup_key_file=self.config.filepath('backup_key', private_key_name, key_type),
-                                       passphrase=key_cipher_data.passphrase if key_cipher_data else None)
-            except PrivateKeyError as error:
-                log.warning('Unable to encrypt private key: %s', str(error))
-                continue
+        if certificate.params_updated and self.config.directory('param'):
+            if dhparams or ecparams:
+                transactions.append(self.save_params(certificate_name, certificate.params.dhparams, certificate.params.ecparams))
+                self._add_hook('params_installed', key_name=certificate_name, certificate_name=certificate_name,
+                               params_file=self.config.filepath('param', certificate_name))
+            else:
+                # TODO: remove old params
+                pass
 
-            # verify DH and EC params for all certificates
-            certificate_params = {}
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                generated_params = False
-                if not (private_key_data.rolled_key or private_key_data.changed_key):
-                    dhparam_pem, ecparam_pem = self.load_params(certificate_name)
-                else:
-                    dhparam_pem, ecparam_pem = (None, None)
-                hold_dhparam_pem = dhparam_pem
-                hold_ecparam_pem = ecparam_pem
-
-                dhparam_size = cert_spec.dhparam_size
-                if dhparam_pem and dhparam_size and (dhparam_size != get_dhparam_size(dhparam_pem)):
-                    log.info('Diffie-Hellman parameters for %s are not %s bits', certificate_name, dhparam_size)
-                    dhparam_pem = None
-                if (not dhparam_pem) and dhparam_size:
-                    log.info('Generating Diffie-Hellman parameters for %s', certificate_name)
-                    dhparam_pem = generate_dhparam(dhparam_size)
-                    if dhparam_pem:
-                        generated_params = True
-                    else:
-                        log.warning('Diffie-Hellman parameters generation failed for %s bits', dhparam_size)
-                        dhparam_pem = hold_dhparam_pem
-
-                ecparam_curve = cert_spec.ecparam_curve
-                if ecparam_pem and ecparam_curve and (ecparam_curve != get_ecparam_curve(ecparam_pem)):
-                    log.info('Elliptical curve parameters for %s are not curve %s', certificate_name, ecparam_curve)
-                    ecparam_pem = None
-                if (not ecparam_pem) and ecparam_curve:
-                    log.info('Generating elliptical curve parameters for %s', certificate_name)
-                    ecparam_pem = generate_ecparam(ecparam_curve)
-                    if ecparam_pem:
-                        generated_params = True
-                    else:
-                        log.warning('Elliptical curve parameters generation failed for curve %s', ecparam_curve)
-                        ecparam_pem = hold_ecparam_pem
-
-                if ((dhparam_pem or ecparam_pem) and self.config.directory('param')
-                        and (generated_params or not self.params_present(certificate_name, dhparam_pem, ecparam_pem))):
-                    transactions.append(self.save_params(certificate_name, dhparam_pem, ecparam_pem))
-                    self._add_hook('params_installed', key_name=private_key_name, certificate_name=certificate_name,
-                                   params_file=self.config.filepath('param', certificate_name))
-                certificate_params[certificate_name] = (dhparam_pem, ecparam_pem, generated_params)
-
-            # save issued certificates
-            saved_certificates = collections.OrderedDict()
-            for certificate_data in private_key_data.issued_certificates:
-                certificate_name = certificate_data.certificate_name
-                dhparam_pem, ecparam_pem, generated_params = certificate_params[certificate_name]
-
-                key_type = certificate_data.key_type
-                if certificate_name not in saved_certificates:
-                    saved_certificates[certificate_name] = []
-                saved_certificates[certificate_name].append(key_type)
-
-                transactions.append(self.save_certificate('certificate', certificate_name, key_type, certificate_data.certificate,
-                                                          chain=certificate_data.chain,
-                                                          dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                self._add_hook('certificate_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
+        # save private keys
+        key_cipher_data = self.key_cipher_data(certificate_name)
+        for key_type, cert_item in certificate.certificates.items():
+            if cert_item.updated or certificate.params_updated:
+                transactions.append(self.save_certificate('certificate', certificate_name, key_type, cert_item.certificate,
+                                                          chain=cert_item.chain, dhparam_pem=dhparams, ecparam_pem=ecparams))
+                self._add_hook('certificate_installed', certificate_name=certificate_name, key_type=key_type,
                                certificate_file=self.config.filepath('certificate', certificate_name, key_type))
-                if root_certificates[key_type] and self.config.directory('full_certificate'):
-                    transactions.append(self.save_certificate('full_certificate', certificate_name, key_type, certificate_data.certificate,
-                                                              chain=certificate_data.chain, root_certificate=root_certificates[key_type],
-                                                              dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                    self._add_hook('full_certificate_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                   full_certificate_file=self.config.filepath('full_certificate', certificate_name, key_type))
-                if certificate_data.chain and self.config.directory('chain'):
-                    transactions.append(self.save_chain(certificate_name, key_type, certificate_data.chain))
-                    self._add_hook('chain_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                   chain_file=self.config.filepath('chain', certificate_name, key_type))
-                try:
-                    if self.config.directory('full_key'):
-                        transactions.append(self.save_private_key('full_key', certificate_name, key_type, private_key_data.keys[key_type].key, key_cipher_data,
-                                                                  certificate=certificate_data.certificate, chain=certificate_data.chain,
-                                                                  dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                        self._add_hook('full_key_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                       full_key_file=self.config.filepath('full_key', certificate_name, key_type))
-                except PrivateKeyError as error:
-                    log.warning('Unable to encrypt private key: %s', str(error))
-                    continue
 
-            # save any generated params for certs not issued
-            for certificate_name in certificate_params:
-                dhparam_pem, ecparam_pem, generated_params = certificate_params[certificate_name]
-                if generated_params:
-                    cert_spec = pk_spec.certificates[certificate_name]
-                    for key_type in cert_spec.key_types:
-                        if ((not private_key_data.keys[key_type].key)
-                                or ((certificate_name in saved_certificates) and (key_type in saved_certificates[certificate_name]))):
-                            continue
-                        certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        if certificate:
-                            if certificate_name not in saved_certificates:
-                                saved_certificates[certificate_name] = []
-                            saved_certificates[certificate_name].append(key_type)
+            if self.config.directory('full_certificate'):
+                full_cert_file = self.config.filepath('full_certificate', certificate_name, key_type)
+                exists = os.path.exists(full_cert_file)
+                if root_certificates[key_type] and (not exists or cert_item.updated or certificate.params_updated):
+                    transactions.append(self.save_certificate('full_certificate', certificate_name, key_type, cert_item.certificate,
+                                                              chain=cert_item.chain, root_certificate=root_certificates[key_type],
+                                                              dhparam_pem=dhparams, ecparam_pem=ecparams))
+                    self._add_hook('full_certificate_installed', certificate_name=certificate_name, key_type=key_type, full_certificate_file=full_cert_file)
+                elif exists and not root_certificates[key_type]:
+                    # TODO: remove existing full certificate
+                    pass
 
-                            chain = self.load_chain(certificate_name, key_type)
+            if self.config.directory('chain') and cert_item.updated:
+                transactions.append(self.save_chain(certificate_name, key_type, cert_item.chain))
+                self._add_hook('chain_installed', certificate_name=certificate_name, key_type=key_type,
+                               chain_file=self.config.filepath('chain', certificate_name, key_type))
 
-                            transactions.append(self.save_certificate('certificate', certificate_name, key_type, certificate,
-                                                                      chain=chain,
-                                                                      dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                            self._add_hook('certificate_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                           certificate_file=self.config.filepath('certificate', certificate_name, key_type))
-                            if root_certificates[key_type] and self.config.directory('full_certificate'):
-                                transactions.append(self.save_certificate('full_certificate', certificate_name, key_type, certificate,
-                                                                          chain=chain, root_certificate=root_certificates[key_type],
-                                                                          dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                                self._add_hook('full_certificate_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                               full_certificate_file=self.config.filepath('full_certificate', certificate_name, key_type))
-                            try:
-                                if self.config.directory('full_key'):
-                                    transactions.append(self.save_private_key('full_key', certificate_name, key_type,
-                                                                              private_key_data.keys[key_type].key, key_cipher_data,
-                                                                              certificate=certificate, chain=chain,
-                                                                              dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem))
-                                    self._add_hook('full_key_installed', key_name=private_key_name, key_type=key_type, certificate_name=certificate_name,
-                                                   full_key_file=self.config.filepath('full_key', certificate_name, key_type))
-                            except PrivateKeyError as error:
-                                log.warning('Unable to encrypt %s private key %s: %s', key_type.upper(), private_key_name, str(error))
-                                continue
+            if cert_item.updated:
+                transactions.append(self.save_private_key('private_key', certificate_name, key_type, cert_item.key, key_cipher_data))
+                self._add_hook('private_key_installed', certificate_name=certificate_name, key_type=key_type,
+                               private_key_file=self.config.filepath('private_key', certificate_name, key_type),
+                               passphrase=key_cipher_data.passphrase if key_cipher_data else None)
 
+            if self.config.directory('full_key') and (cert_item.updated or certificate.params_updated):
+                transactions.append(self.save_private_key('full_key', certificate_name, key_type, cert_item.key, key_cipher_data,
+                                                          certificate=cert_item.certificate, chain=cert_item.chain,
+                                                          dhparam_pem=dhparams, ecparam_pem=ecparams))
+                self._add_hook('full_key_installed', certificate_name=certificate_name, key_type=key_type,
+                               full_key_file=self.config.filepath('full_key', certificate_name, key_type))
+
+        if transactions:
             try:
-                self._commit_file_transactions(transactions, archive_name=private_key_name)
+                self._commit_file_transactions(transactions, archive_name=certificate_name)
                 self._call_hooks()
-                if private_key_data.generated_key or private_key_data.rolled_key or generated_backup_key:
-                    log.info('Private keys for %s installed', private_key_name)
-                for certificate_name in saved_certificates:
-                    for key_type in saved_certificates[certificate_name]:
-                        log.info('%s certificate %s installed', key_type.upper(), certificate_name)
-                        cert_spec = pk_spec.certificates[certificate_name]
-                        self.update_services(cert_spec.services)
-                        self.update_certificate(certificate_name)
-                if generated_backup_key:  # reload services for all certificates
-                    for certificate_name, cert_spec in pk_spec.certificates.items():
-                        self.update_services(cert_spec.services)
-                        self.update_certificate(certificate_name)
+
+                updated = False
+                for key_type, cert_item in certificate.certificates.items():
+                    if cert_item.updated:
+                        log.info('%s private keys and certificate for %s installed', key_type.upper(), certificate_name)
+                        updated = True
+
+                if updated:
+                    self.update_services(cert_spec.services)
+                    self.update_certificate(certificate_name)
 
             except Exception as error:
-                log.warning('Unable to install keys and certificates for %s: %s', private_key_name, str(error))
+                log.warning('Unable to install keys and certificates for %s: %s', certificate_name, str(error))
                 self._clear_hooks()
 
-    def revoke_certificates(self, private_key_names):
-        for private_key_name in private_key_names:
-            if private_key_name in self.config.private_keys:
-                pk_spec = self.config.private_keys[private_key_name]
-                revoked_certificates = []
+    def revoke_certificates(self, certificate_names):
+        for certificate_name in certificate_names:
+            cert_spec = self.config.certificates.get(certificate_name)
+            if cert_spec:
                 certificate_count = 0
-                for certificate_name, cert_spec in pk_spec.certificates.items():
-                    for key_type in cert_spec.key_types:
-                        certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        if certificate:
-                            certificate_count += 1
-                            try:
-                                self.acme_client.revoke(josepy.ComparableX509(certificate), 0)
-                                revoked_certificates.append((certificate_name, key_type))
-                                log.info('%s certificate %s revoked', key_type.upper(), certificate_name)
-                            except Exception as error:
-                                log.warning('Unable to revoke %s certificate %s: %s', key_type.upper(), certificate_name, str(error))
-                        else:
-                            log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
+                revoked_certificates = []
+                for key_type in cert_spec.key_types:
+                    certificate = self.load_certificate('certificate', certificate_name, key_type)
+                    if certificate:
+                        certificate_count += 1
+                        try:
+                            self.acme_client.revoke(josepy.ComparableX509(certificate), 0)
+                            revoked_certificates.append(key_type)
+                            log.info('%s certificate %s revoked', key_type.upper(), certificate_name)
+                        except Exception as error:
+                            log.warning('Unable to revoke %s certificate %s: %s', key_type.upper(), certificate_name, str(error))
+                    else:
+                        log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
 
                 archive_date = datetime.datetime.now()
-                for certificate_name, key_type in revoked_certificates:
-                    cert_spec = pk_spec.certificates[certificate_name]
-                    self.archive_certificate('certificate', certificate_name, key_type, archive_name=private_key_name, archive_date=archive_date)
-                    self.archive_certificate('full_certificate', certificate_name, key_type, archive_name=private_key_name, archive_date=archive_date)
-                    self.archive_chain(certificate_name, key_type, archive_name=private_key_name, archive_date=archive_date)
-                    self.archive_private_key('full_key', certificate_name, key_type, archive_name=private_key_name, archive_date=archive_date)
-                    self.archive_params(certificate_name, archive_name=private_key_name, archive_date=archive_date)
+                for key_type in revoked_certificates:
+                    self.archive_certificate('certificate', certificate_name, key_type, archive_name=certificate_name, archive_date=archive_date)
+                    self.archive_certificate('full_certificate', certificate_name, key_type, archive_name=certificate_name, archive_date=archive_date)
+                    self.archive_chain(certificate_name, key_type, archive_name=certificate_name, archive_date=archive_date)
+                    self.archive_private_key('full_key', certificate_name, key_type, archive_name=certificate_name, archive_date=archive_date)
+                    self.archive_params(certificate_name, archive_name=certificate_name, archive_date=archive_date)
                     for ct_log_name in cert_spec.ct_submit_logs:
-                        self.archive_sct(certificate_name, key_type, ct_log_name, archive_name=private_key_name, archive_date=archive_date)
+                        self.archive_sct(certificate_name, key_type, ct_log_name, archive_name=certificate_name, archive_date=archive_date)
 
                 if len(revoked_certificates) == certificate_count:
-                    for key_type in pk_spec.key_types:
-                        self.archive_private_key('private_key', private_key_name, key_type, archive_name=private_key_name, archive_date=archive_date)
+                    for key_type in cert_spec.key_types:
+                        self.archive_private_key('private_key', certificate_name, key_type, archive_name=certificate_name, archive_date=archive_date)
             else:
-                log.warning('%s is not a configured private key', private_key_name)
+                log.warning('%s is not a configured private key', certificate_name)
 
-    def update_signed_certificate_timestamps(self, private_key_names):
+    def update_signed_certificate_timestamps(self, certificates_names):
         if not self.config.directory('sct'):
             return
 
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if certificates_names and (certificate_name not in certificates_names):
+                continue
+
+            if not cert_spec.ct_submit_logs:
                 continue
 
             transactions = []
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                if cert_spec.ct_submit_logs:
-                    for key_type in cert_spec.key_types:
-                        certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        if certificate:
-                            chain = self.load_chain(certificate_name, key_type)
-                            for ct_log_name in cert_spec.ct_submit_logs:
-                                sct_data = self.fetch_sct(ct_log_name, certificate, chain)
-                                if sct_data:
-                                    log.debug('%s has SCT for %s certificate %s at %s', ct_log_name, key_type.upper(),
-                                              certificate_name, self._sct_datetime(sct_data.timestamp).isoformat())
-                                    existing_sct_data = self.load_sct(certificate_name, key_type, ct_log_name)
-                                    if sct_data and ((not existing_sct_data) or (sct_data != existing_sct_data)):
-                                        log.info('Saving Signed Certificate Timestamp for %s certificate %s from %s', key_type.upper(), certificate_name,
-                                                 ct_log_name)
-                                        transactions.append(self.save_sct(certificate_name, key_type, ct_log_name, sct_data))
-                                        self._add_hook('sct_installed', key_name=private_key_name, key_type=key_type,
-                                                       certificate_name=certificate_name, ct_log_name=ct_log_name,
-                                                       sct_file=self.config.filepath('sct', certificate_name, key_type, ct_log_name=ct_log_name))
-                                        self.update_services(cert_spec.services)
-                                        self.update_certificate(certificate_name)
-                            else:
-                                log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
+            for key_type in cert_spec.key_types:
+                certificate = self.load_certificate('certificate', certificate_name, key_type)
+                if not certificate:
+                    log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
+                    continue
 
+                chain = self.load_chain(certificate_name, key_type)
+                for ct_log_name in cert_spec.ct_submit_logs:
+                    sct_data = self.fetch_sct(ct_log_name, certificate, chain)
+                    if sct_data:
+                        log.debug('%s has SCT for %s certificate %s at %s', ct_log_name, key_type.upper(),
+                                  certificate_name, self._sct_datetime(sct_data.timestamp).isoformat())
+                        existing_sct_data = self.load_sct(certificate_name, key_type, ct_log_name)
+                        if sct_data and ((not existing_sct_data) or (sct_data != existing_sct_data)):
+                            log.info('Saving Signed Certificate Timestamp for %s certificate %s from %s', key_type.upper(), certificate_name,
+                                     ct_log_name)
+                            transactions.append(self.save_sct(certificate_name, key_type, ct_log_name, sct_data))
+                            self._add_hook('sct_installed', certificate_name=certificate_name, key_type=key_type, ct_log_name=ct_log_name,
+                                           sct_file=self.config.filepath('sct', certificate_name, key_type, ct_log_name=ct_log_name))
+            if transactions:
                 try:
                     self._commit_file_transactions(transactions, archive_name=None)
                     self._call_hooks()
+
+                    self.update_services(cert_spec.services)
+                    self.update_certificate(certificate_name)
                 except Exception as error:
-                    log.warning('Unable to save Signed Certificate Timestamps for %s: %s', private_key_name, str(error))
+                    log.warning('Unable to save Signed Certificate Timestamps for %s: %s', certificate_name, str(error))
                     self._clear_hooks()
 
-    def update_ocsp_responses(self, private_key_names):
+    def update_ocsp_responses(self, certificate_names):
         if not self.config.directory('ocsp'):
             return
 
         root_certificates = self.load_root_certificates()
 
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if certificate_names and (certificate_name not in certificate_names):
+                continue
+
+            # ignore ocsp if explicitly disabled for this certificate
+            if not cert_spec.ocsp_responder_urls:
                 continue
 
             transactions = []
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                # ignore ocsp if explicitly disabled for this certificate
-                if not cert_spec.ocsp_responder_urls:
+            for key_type in cert_spec.key_types:
+                certificate = self.load_certificate('certificate', certificate_name, key_type)
+                if not certificate:
+                    log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
                     continue
 
-                for key_type in cert_spec.key_types:
-                    certificate = self.load_certificate('certificate', certificate_name, key_type)
-                    if not certificate:
-                        log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
-                        continue
-                    asn1crypto_certificate = asn1_x509.Certificate.load(certificate_bytes(certificate))
+                asn1crypto_certificate = asn1_x509.Certificate.load(certificate_bytes(certificate))
+                ocsp_response = self.load_oscp_response(certificate_name, key_type)
+                if (ocsp_response and ('good' == ocsp_response_status(ocsp_response).lower())
+                        and (ocsp_response_serial_number(ocsp_response) == asn1crypto_certificate.serial_number)):
+                    last_update = ocsp_response_this_update(ocsp_response)
+                    log.debug('Have stapled OCSP response for %s certificate %s updated at %s',
+                              key_type.upper(), certificate_name, last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                else:
+                    last_update = None
 
-                    ocsp_response = self.load_oscp_response(certificate_name, key_type)
-                    if (ocsp_response and ('good' == ocsp_response_status(ocsp_response).lower())
-                            and (ocsp_response_serial_number(ocsp_response) == asn1crypto_certificate.serial_number)):
-                        last_update = ocsp_response_this_update(ocsp_response)
-                        log.debug('Have stapled OCSP response for %s certificate %s updated at %s',
-                                  key_type.upper(), certificate_name, last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
-                    else:
-                        last_update = None
+                ocsp_urls = (asn1crypto_certificate.ocsp_urls or cert_spec.ocsp_responder_urls)
+                if ocsp_urls:
+                    chain = self.load_chain(certificate_name, key_type)
+                    issuer_certificate = chain[0] if chain else root_certificates[key_type]
+                    issuer_asn1_certificate = asn1_x509.Certificate.load(certificate_bytes(issuer_certificate))
 
-                    ocsp_urls = (asn1crypto_certificate.ocsp_urls or cert_spec.ocsp_responder_urls)
-                    if ocsp_urls:
-                        chain = self.load_chain(certificate_name, key_type)
-                        issuer_certificate = chain[0] if chain else root_certificates[key_type]
-                        issuer_asn1_certificate = asn1_x509.Certificate.load(certificate_bytes(issuer_certificate))
+                    tbs_request = asn1_ocsp.TBSRequest({
+                        'request_list': [
+                            {
+                                'req_cert': {
+                                    'hash_algorithm': {'algorithm': 'sha1'},
+                                    'issuer_name_hash': asn1crypto_certificate.issuer.sha1,
+                                    'issuer_key_hash': issuer_asn1_certificate.public_key.sha1,
+                                    'serial_number': asn1crypto_certificate.serial_number,
+                                },
+                                'single_request_extensions': None
+                            }
+                        ],
+                        'request_extensions': None  # [{'extn_id': 'nonce', 'critical': False, 'extn_value': os.urandom(16)}]
+                        # we don't appear to be getting the nonce back, so don't send it
+                    })
+                    ocsp_request = asn1_ocsp.OCSPRequest({
+                        'tbs_request': tbs_request,
+                        'optional_signature': None
+                    })
 
-                        tbs_request = asn1_ocsp.TBSRequest({
-                            'request_list': [
-                                {
-                                    'req_cert': {
-                                        'hash_algorithm': {'algorithm': 'sha1'},
-                                        'issuer_name_hash': asn1crypto_certificate.issuer.sha1,
-                                        'issuer_key_hash': issuer_asn1_certificate.public_key.sha1,
-                                        'serial_number': asn1crypto_certificate.serial_number,
-                                    },
-                                    'single_request_extensions': None
-                                }
-                            ],
-                            'request_extensions': None  # [{'extn_id': 'nonce', 'critical': False, 'extn_value': os.urandom(16)}]
-                            # we don't appear to be getting the nonce back, so don't send it
-                        })
-                        ocsp_request = asn1_ocsp.OCSPRequest({
-                            'tbs_request': tbs_request,
-                            'optional_signature': None
-                        })
-
-                        for ocsp_url in ocsp_urls:
-                            ocsp_response = fetch_ocsp_response(ocsp_url, ocsp_request, last_update)
-                            if ocsp_response:
-                                if 'successful' == ocsp_response['response_status'].native:
-                                    ocsp_status = ocsp_response_status(ocsp_response)
-                                    this_update = ocsp_response_this_update(ocsp_response)
-                                    log.debug('Retrieved OCSP status "%s" for %s certificate %s from %s updated at %s', ocsp_status.upper(),
-                                              key_type.upper(), certificate_name, ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
-                                    if 'good' == ocsp_status.lower():
-                                        if this_update == last_update:
-                                            log.debug('OCSP response for %s certificate %s from %s has not been updated',
-                                                      key_type.upper(), certificate_name, ocsp_url)
-                                            break
-                                        log.info('Saving OCSP response for %s certificate %s from %s', key_type.upper(), certificate_name, ocsp_url)
-                                        transactions.append(self.save_ocsp_response(certificate_name, key_type, ocsp_response))
-                                        self._add_hook('ocsp_installed', key_name=private_key_name, key_type=key_type,
-                                                       certificate_name=certificate_name,
-                                                       ocsp_file=self.config.filepath('ocsp', certificate_name, key_type))
-                                        self.update_services(cert_spec.services)
-                                        self.update_certificate(certificate_name)
+                    for ocsp_url in ocsp_urls:
+                        ocsp_response = fetch_ocsp_response(ocsp_url, ocsp_request, last_update)
+                        if ocsp_response:
+                            if 'successful' == ocsp_response['response_status'].native:
+                                ocsp_status = ocsp_response_status(ocsp_response)
+                                this_update = ocsp_response_this_update(ocsp_response)
+                                log.debug('Retrieved OCSP status "%s" for %s certificate %s from %s updated at %s', ocsp_status.upper(),
+                                          key_type.upper(), certificate_name, ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                                if 'good' == ocsp_status.lower():
+                                    if this_update == last_update:
+                                        log.debug('OCSP response for %s certificate %s from %s has not been updated',
+                                                  key_type.upper(), certificate_name, ocsp_url)
                                         break
-                                    else:
-                                        log.warning('%s certificate %s has OCSP status "%s" from %s updated at %s', key_type.upper(), certificate_name,
-                                                    ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                                    log.info('Saving OCSP response for %s certificate %s from %s', key_type.upper(), certificate_name, ocsp_url)
+                                    transactions.append(self.save_ocsp_response(certificate_name, key_type, ocsp_response))
+                                    self._add_hook('ocsp_installed', certificate_name=certificate_name, key_type=key_type,
+                                                   ocsp_file=self.config.filepath('ocsp', certificate_name, key_type))
+                                    break
                                 else:
-                                    log.warning('%s certificate %s: OCSP request received "%s" from %s', key_type.upper(), certificate_name,
-                                                ocsp_response['response_status'].native, ocsp_url)
-                            elif ocsp_response is False:
-                                log.debug('OCSP response for %s certificate %s from %s has not been updated', key_type.upper(), certificate_name, ocsp_url)
-                                break
-                        else:
-                            log.warning('Unable to retrieve OCSP response for %s certificate %s', key_type.upper(), certificate_name)
+                                    log.warning('%s certificate %s has OCSP status "%s" from %s updated at %s', key_type.upper(), certificate_name,
+                                                ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                            else:
+                                log.warning('%s certificate %s: OCSP request received "%s" from %s', key_type.upper(), certificate_name,
+                                            ocsp_response['response_status'].native, ocsp_url)
+                        elif ocsp_response is False:
+                            log.debug('OCSP response for %s certificate %s from %s has not been updated', key_type.upper(), certificate_name, ocsp_url)
+                            break
                     else:
-                        log.warning('No OCSP responder URL for %s certificate %s and no default set', key_type.upper(), certificate_name)
+                        log.warning('Unable to retrieve OCSP response for %s certificate %s', key_type.upper(), certificate_name)
+                else:
+                    log.warning('No OCSP responder URL for %s certificate %s and no default set', key_type.upper(), certificate_name)
 
-            try:
-                self._commit_file_transactions(transactions, archive_name=None)
-                self._call_hooks()
-            except Exception as error:
-                log.warning('Unable to save OCSP responses for %s: %s', private_key_name, str(error))
-                self._clear_hooks()
+            if transactions:
+                try:
+                    self._commit_file_transactions(transactions, archive_name=None)
+                    self._call_hooks()
+                    self.update_services(cert_spec.services)
+                    self.update_certificate(certificate_name)
+                except Exception as error:
+                    log.warning('Unable to save OCSP responses for %s: %s', certificate_name, str(error))
+                    self._clear_hooks()
 
-    def _verify_certificate_installation(self, certificate_name, certificate, chain, key_type, host_name, port_number, starttls, cipher_list, protocol, keys):
+    def _verify_certificate_installation(self, certificate_name, certificate, chain, key_type, host_name, port_number, starttls, cipher_list):
         ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
         ssl_context.set_cipher_list(cipher_list)
 
@@ -1376,7 +1254,7 @@ class AcmeManager(object):
             except Exception as error:
                 log.warning('ERROR: Unable to connect to %s via %s: %s', host_desc, key_type.upper(), str(error))
 
-    def verify_certificate_installation(self, private_key_names):
+    def verify_certificate_installation(self, certificate_names):
         key_type_ciphers = {}
         ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
         ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
@@ -1384,39 +1262,102 @@ class AcmeManager(object):
         key_type_ciphers['rsa'] = ':'.join([cipher_name for cipher_name in all_ciphers if 'RSA' in cipher_name]).encode('ascii')
         key_type_ciphers['ecdsa'] = ':'.join([cipher_name for cipher_name in all_ciphers if 'ECDSA' in cipher_name]).encode('ascii')
 
-        for private_key_name, pk_spec in self.config.private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if certificate_names and (certificate_name not in certificate_names):
+                continue
+
+            verify_list = cert_spec.verify
+            if not verify_list:
                 continue
 
             keys = []
-            key_cipher_data = self.key_cipher_data(private_key_name)
+            key_cipher_data = self.key_cipher_data(certificate_name)
             try:
-                for key_type in pk_spec.key_types:
-                    keys.append((key_type, private_key_name, 'private', self.load_private_key('private_key', private_key_name, key_type, key_cipher_data).key))
-                    keys.append((key_type, private_key_name, 'backup', self.load_private_key('backup_key', private_key_name, key_type, key_cipher_data).key))
+                for key_type in cert_spec.key_types:
+                    keys.append((key_type, self.load_private_key('private_key', certificate_name, key_type, key_cipher_data)))
             except PrivateKeyError as error:
-                log.warning('Unable to load private key %s: %s', private_key_name, str(error))
+                log.warning('Unable to load private key %s: %s', certificate_name, str(error))
                 continue
 
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                verify_list = cert_spec.verify
-                if verify_list:
+            for key_type in cert_spec.key_types:
+                certificate = self.load_certificate('certificate', certificate_name, key_type)
+                if not certificate:
+                    log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
+                    continue
 
-                    for key_type in cert_spec.key_types:
-                        certificate = self.load_certificate('certificate', certificate_name, key_type)
-                        chain = self.load_chain(certificate_name, key_type)
-                        if not certificate:
-                            log.warning('%s certificate %s not found', key_type.upper(), certificate_name)
-                            continue
+                chain = self.load_chain(certificate_name, key_type)
 
-                        for verify in verify_list:
-                            if verify.key_types and key_type not in verify.key_types:
-                                continue
-                            for host_name in verify.hosts or cert_spec.alt_names:
-                                if host_name in cert_spec.alt_names:
-                                    self._verify_certificate_installation(certificate_name, certificate, chain, key_type,
-                                                                          host_name, verify['port'], verify['starttls'], key_type_ciphers[key_type],
-                                                                          verify['protocol'], keys)
+                for verify in verify_list:
+                    if verify.key_types and key_type not in verify.key_types:
+                        continue
+                    for host_name in verify.hosts or cert_spec.alt_names:
+                        self._verify_certificate_installation(certificate_name, certificate, chain, key_type,
+                                                              host_name, verify.port, verify.starttls, key_type_ciphers[key_type])
+
+    def process_symlink(self, alt_names: List[str], target: str, link: str):
+        create = os.path.exists(target)
+
+        for alt_name in alt_names:
+            src = os.path.join(self.config.directory('symlinks'), alt_name, link)
+            if create:
+                try:
+                    if os.readlink(src) == target:
+                        return
+                except FileNotFoundError:
+                    pass
+                log.debug("create symlink '%s' pointing to '%s'", src, target)
+                os.symlink(target, src)
+            else:
+                try:
+                    os.remove(src)
+                    log.debug("removing symlink '%s'", src)
+                except FileNotFoundError:
+                    pass
+
+    def process_symlinks(self, certificate_names):
+        if not self.config.directory('symlinks'):
+            return
+
+        for certificate_name, cert_spec in self.config.certificates.items():
+            if certificate_names and (certificate_name not in certificate_names):
+                continue
+
+            log.debug('Update symlinks for %s', certificate_name)
+
+            # Create target directories
+            root = self.config.directory('symlinks')
+            alt_names = cert_spec.alt_names
+            for alt_name in alt_names:
+                os.makedirs(os.path.join(root, alt_name), mode=0o755, exist_ok=True)
+
+            target = self.config.filepath('param', certificate_name)
+            self.process_symlink(alt_names, target, 'params.pem')
+
+            for key_type in cert_spec.key_types:
+                # Private Keys
+                target = self.config.filepath('private_key', certificate_name, key_type)
+                self.process_symlink(alt_names, target, key_type + '.key')
+
+                target = self.config.filepath('full_key', certificate_name, key_type)
+                self.process_symlink(alt_names, target, 'full.' + key_type + '.key')
+
+                # Certificate
+                target = self.config.filepath('certificate', certificate_name, key_type)
+                self.process_symlink(alt_names, target, 'cert.' + key_type + '.pem')
+
+                target = self.config.filepath('chain', certificate_name, key_type)
+                self.process_symlink(alt_names, target, 'chain.' + key_type + '.pem')
+
+                target = self.config.filepath('full_certificate', certificate_name, key_type)
+                self.process_symlink(alt_names, target, 'cert+root.' + key_type + '.pem')
+
+                # OCSP
+                target = self.config.filepath('ocsp', certificate_name, key_type)
+                self.process_symlink(alt_names, target, key_type + '.ocsp')
+
+                for ct_log_name in cert_spec.ct_submit_logs:
+                    target = self.config.filepath('sct', certificate_name, key_type, ct_log_name=ct_log_name)
+                    self.process_symlink(alt_names, target, ct_log_name + '.' + key_type + '.sct')
 
     def run(self):
         log.info('\n----- %s executed at %s', self.script_name, str(datetime.datetime.now()))
@@ -1483,84 +1424,17 @@ class AcmeManager(object):
         finally:
             os.remove(pid_file_path)
 
-    def process_symlink(self, alt_names: List[str], target: str, link: str):
-        create = os.path.exists(target)
 
-        for alt_name in alt_names:
-            src = os.path.join(self.config.directory('symlinks'), alt_name, link)
-            if create:
-                try:
-                    if os.readlink(src) == target:
-                        return
-                except FileNotFoundError:
-                    pass
-                log.debug("create symlink '%s' pointing to '%s'", src, target)
-                os.symlink(target, src)
-            else:
-                try:
-                    os.remove(src)
-                    log.debug("removing stall symlink '%s'", src)
-                except FileNotFoundError:
-                    pass
-
-    def process_symlinks(self, private_key_names):
-        if not self.config.directory('symlinks'):
-            return
-
-        private_keys = self.config.private_keys
-        for private_key_name, pk_spec in private_keys.items():
-            if private_key_names and (private_key_name not in private_key_names):
-                continue
-
-            for certificate_name, cert_spec in pk_spec.certificates.items():
-                log.debug('Symlink certificate %s', certificate_name)
-
-                # Create target directories
-                root = self.config.directory('symlinks')
-                alt_names = cert_spec.alt_names
-                for alt_name in alt_names:
-                    os.makedirs(os.path.join(root, alt_name), mode=0o755, exist_ok=True)
-
-                target = self.config.filepath('param', certificate_name)
-                self.process_symlink(alt_names, target, 'params.pem')
-
-                for key_type in cert_spec.key_types:
-                    # Private Keys
-                    target = self.config.filepath('private_key', private_key_name, key_type)
-                    self.process_symlink(alt_names, target, key_type + '.key')
-
-                    target = self.config.filepath('full_key', certificate_name, key_type)
-                    self.process_symlink(alt_names, target, 'full.' + key_type + '.key')
-
-                    # Certificate
-                    target = self.config.filepath('certificate', certificate_name, key_type)
-                    self.process_symlink(alt_names, target, 'cert.' + key_type + '.pem')
-
-                    target = self.config.filepath('chain', certificate_name, key_type)
-                    self.process_symlink(alt_names, target, 'chain.' + key_type + '.pem')
-
-                    target = self.config.filepath('full_certificate', certificate_name, key_type)
-                    self.process_symlink(alt_names, target, 'cert+root.' + key_type + '.pem')
-
-                    # OCSP
-                    target = self.config.filepath('ocsp', certificate_name, key_type)
-                    self.process_symlink(alt_names, target, key_type + '.ocsp')
-
-                    for ct_log_name in cert_spec.ct_submit_logs:
-                        target = self.config.filepath('sct', certificate_name, key_type, ct_log_name=ct_log_name)
-                        self.process_symlink(alt_names, target, ct_log_name + '.' + key_type + '.sct')
-
-
-def debug_hook(type, value, tb):
+def debug_hook(ty, value, tb):
     if hasattr(sys, 'ps1') or not sys.stderr.isatty():
         # we are in interactive mode or we don't have a tty-like
         # device, so we call the default hook
-        sys.__excepthook__(type, value, tb)
+        sys.__excepthook__(ty, value, tb)
     else:
         import traceback
         import pdb
         # we are NOT in interactive mode, print the exception...
-        traceback.print_exception(type, value, tb)
+        traceback.print_exception(ty, value, tb)
         print()
         # ...then start the debugger in post-mortem mode.
         pdb.pm()

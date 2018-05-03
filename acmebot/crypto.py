@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Union
 
 import OpenSSL
+from OpenSSL.crypto import X509, PKey
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
@@ -79,7 +80,7 @@ def private_key_descripton(key_type, options: Union[str, int]):
     return ''
 
 
-def public_key_bytes(private_key):
+def public_key_bytes(private_key: PKey):
     if private_key:
         return private_key.to_cryptography_key().public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     return None
@@ -107,7 +108,7 @@ def ocsp_must_staple_extension():
     return OpenSSL.crypto.X509Extension(b'1.3.6.1.5.5.7.1.24', critical=False, value=b'DER:30:03:02:01:05')
 
 
-def get_alt_names(certificate):
+def get_alt_names(certificate: X509):
     for index in range(certificate.get_extension_count()):
         extension = certificate.get_extension(index)
         if b'subjectAltName' == extension.get_short_name():
@@ -115,7 +116,7 @@ def get_alt_names(certificate):
     return []
 
 
-def has_oscp_must_staple(certificate):
+def has_oscp_must_staple(certificate: X509):
     ocsp_must_staple = ocsp_must_staple_extension()
     for index in range(certificate.get_extension_count()):
         extension = certificate.get_extension(index)
@@ -125,7 +126,7 @@ def has_oscp_must_staple(certificate):
     return False
 
 
-def private_key_matches_certificate(private_key, certificate):
+def private_key_matches_certificate(private_key, certificate: X509):
     return public_key_bytes(private_key) == certificate_public_key_bytes(certificate)
 
 

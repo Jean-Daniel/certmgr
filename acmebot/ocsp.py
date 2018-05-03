@@ -9,6 +9,8 @@ def load_ocsp_response(filepath: str):
     try:
         with open(filepath, 'rb') as ocsp_file:
             return asn1_ocsp.OCSPResponse.load(ocsp_file.read())
+    except FileNotFoundError:
+        pass
     except Exception as e:
         logging.warning('OSCP response "%s" loading failed: %s', filepath, str(e))
     return None

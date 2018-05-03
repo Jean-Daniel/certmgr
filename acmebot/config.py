@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 from collections import OrderedDict
-from typing import Iterable, Optional, Dict, List, Tuple
+from typing import Iterable, Optional, Dict, List, Tuple, Union
 
 import collections
 
@@ -48,15 +48,16 @@ class VerifyTarget(object):
     __slots__ = ('port', 'hosts', 'starttls', 'key_types')
 
     def __init__(self, spec):
-        if isinstance(spec, int):
+        if isinstance(spec, (int, str)):
             self.port = spec
-            self.hosts = self.starttls = self.key_types = None
+            self.hosts = ()
+            self.starttls = self.key_types = None
         else:
-            assert isinstance(spec, dict)
+            assert isinstance(spec, dict), "dict expected but got " + str(spec.__class__)
             if 'port' not in spec:
                 log.error('[config] verify missing port definition')
             self.port = spec.get('port')
-            self.hosts = spec.get('hosts')
+            self.hosts = get_list(spec, 'hosts')
             self.starttls = spec.get('starttls')
             self.key_types = get_list(spec, 'key_types')
 
@@ -68,39 +69,35 @@ class VerifyTarget(object):
 
 
 class PrivateKeySpec(object):
-    __slots__ = ('key_types', 'key_size', 'key_curve', 'key_cipher', 'key_passphrase', 'expiration_days', 'auto_rollover', 'certificates')
+    __slots__ = ('types', 'size', 'curve', 'cipher', 'passphrase')
 
     def __init__(self, spec, defaults):
-        self.key_size = get_int(spec, 'key_size', defaults['key_size'])
-        self.key_curve = spec.get('key_curve', defaults['key_curve'])
-        self.key_cipher = spec.get('key_cipher', defaults['key_cipher'])
-        self.key_passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
-        self.expiration_days = get_int(spec, 'expiration_days', defaults['expiration_days'])
-        self.auto_rollover = get_bool(spec, 'auto_rollover', defaults['auto_rollover'])
-        self.certificates = {}  # type: Dict[str, 'CertificateSpec']
+        self.size = get_int(spec, 'key_size', defaults['key_size'])
+        self.curve = spec.get('key_curve', defaults['key_curve'])
+        self.cipher = spec.get('key_cipher', defaults['key_cipher'])
+        self.passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
 
-        self.key_types = set()
-        if self.key_size:
-            self.key_types.add('rsa')
-        if self.key_curve:
-            self.key_types.add('ecdsa')
+        self.types = set()
+        if self.size:
+            self.types.add('rsa')
+        if self.curve:
+            self.types.add('ecdsa')
 
-    @property
-    def key_options(self) -> List[Tuple[str, object]]:
-        options = []
-        if 'rsa' in self.key_types:
-            options.append(('rsa', self.key_size))
-        if 'ecdsa' in self.key_types:
-            options.append(('ecdsa', self.key_curve))
-        return options
+    def params(self, key_type: str) -> Union[str, int]:
+        if 'rsa' == key_type:
+            return self.size
+        if 'ecdsa' == key_type:
+            return self.curve
+        raise AcmeError('Unsupported key type {}', key_type)
 
 
 class CertificateSpec(object):
-    __slots__ = ('common_name', 'alt_names',
+    __slots__ = ('private_key', 'common_name', 'alt_names',
                  'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
-    def __init__(self, name, spec, key_types, defaults):
+    def __init__(self, name, spec, defaults):
+        self.private_key = PrivateKeySpec(spec, defaults)
         self.common_name = spec.get('common_name', name).strip().lower()
         alt_names = spec.get('alt_names')
         if not alt_names:
@@ -119,7 +116,12 @@ class CertificateSpec(object):
         if self.common_name not in self.alt_names:
             raise AcmeError('[config] Certificate common name "{}" not listed in alt_names in certificate "{}"', self.common_name, name)
 
-        self.key_types = spec.get('key_types', key_types)
+        self.key_types = spec.get('key_types', self.private_key.types)
+        for kt in self.key_types:
+            if kt not in ('rsa', 'ecdsa'):
+                raise AcmeError('[config] certificate {} requests unsupported key type "{}"', name, kt)
+            if kt not in self.private_key.types:
+                raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', name, kt)
 
         self.services = spec.get('services')
 
@@ -130,7 +132,7 @@ class CertificateSpec(object):
         self.ocsp_responder_urls = get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
 
         self.ct_submit_logs = get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs'])
-        self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
+        self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify')] or defaults['verify']
 
 
 class Configuration(object):
@@ -155,7 +157,7 @@ class Configuration(object):
         with open(cfg.path, 'rt', encoding='utf-8') as config_file:
             data = json.load(config_file, object_pairs_hook=collections.OrderedDict)
             for section, values in data.items():
-                # TODO: authorizations, http_challenges, zone_update_keys
+                # TODO: http_challenges
                 if section == 'account':
                     _merge('account', cfg.account, values)
                 elif section == 'settings':
@@ -177,13 +179,10 @@ class Configuration(object):
                     _merge('ct_logs', cfg.ct_logs, values, check=False)
                 elif section == 'certificates':
                     cfg._parse_certificates(values)
-                elif section == 'private_keys':
-                    cfg._parse_private_keys(values)
                 elif section == 'authorizations':
                     cfg._parse_authorizations(values)
                 else:
                     log.warning('[config] unknown section name: "%s"', section)
-            cfg._validate_keys()
 
         return cfg
 
@@ -206,8 +205,6 @@ class Configuration(object):
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
             'renewal_days': 30,
-            'expiration_days': 730,
-            'auto_rollover': False,
             'max_domains_per_order': 100,
             'max_authorization_attempts': 30,
             'authorization_delay': 10,
@@ -225,42 +222,32 @@ class Configuration(object):
             'symlinks': None,
             'resource': '/var/local/acmebot',
             'private_key': '/etc/ssl/private',
-            'backup_key': '/etc/ssl/private',
-            'previous_key': None,
             'full_key': '/etc/ssl/private',
             'certificate': '/etc/ssl/certs',
             'full_certificate': '/etc/ssl/certs',
             'chain': '/etc/ssl/certs',
             'param': '/etc/ssl/params',
-            'challenge': '/etc/ssl/challenges',
             'http_challenge': None,
             'ocsp': '/etc/ssl/ocsp/',
             'sct': '/etc/ssl/scts/{name}/{key_type}',
-            'update_key': '/etc/ssl/update_keys',
             'archive': '/etc/ssl/archive',
             'temp': None
         }
         self.file_names = {
             'log': 'acmebot.log',
             'private_key': '{name}{suffix}.key',
-            'backup_key': '{name}_backup{suffix}.key',
-            "previous_key": "{name}_previous{suffix}.key",
             'full_key': '{name}_full{suffix}.key',
             'certificate': '{name}{suffix}.pem',
             'full_certificate': '{name}+root{suffix}.pem',
             'chain': '{name}_chain{suffix}.pem',
             'param': '{name}_param.pem',
-            'challenge': '{name}',
             'ocsp': '{name}{suffix}.ocsp',
             'sct': '{ct_log_name}.sct'
         }
         self.hooks = {
             'set_http_challenge': None,
             'clear_http_challenge': None,
-            'private_key_rollover': None,
             'private_key_installed': None,
-            'backup_key_installed': None,
-            'previous_key_installed': None,
             'certificate_installed': None,
             'full_certificate_installed': None,
             'chain_installed': None,
@@ -331,8 +318,8 @@ class Configuration(object):
                 'id': '23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q='
             }
         }
-        self.private_keys = OrderedDict()  # type: Dict[str, PrivateKeySpec]
         self.authorizations = {}
+        self.certificates = OrderedDict()  # type: Dict[str, CertificateSpec]
 
     def get(self, item: str, default=None):
         return self.settings.get(item, default)
@@ -375,32 +362,20 @@ class Configuration(object):
         return self.services[service_name]
 
     def _parse_certificates(self, certificates: dict):
-        # convert bare certificate definitions to private key definitions
+        host_names = set()
         for certificate_name, certificate_spec in certificates.items():
-            if certificate_name not in self.private_keys:
-                self.private_keys[certificate_name] = PrivateKeySpec(certificate_spec, self.settings)
+            cert = CertificateSpec(certificate_name, certificate_spec, self.settings)
+            for host_name in cert.alt_names:
+                if host_name in host_names:
+                    raise AcmeError("[config] {} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
+                host_names.add(host_name)
 
-            if certificate_name not in self.private_keys[certificate_name].certificates:
-                self.private_keys[certificate_name].certificates[certificate_name] = CertificateSpec(
-                    certificate_name, certificate_spec, self.private_keys[certificate_name].key_types, self.settings)
-            else:
-                raise AcmeError('[config] Certificate "{}" already configured with private key', certificate_name)
+            for v in cert.verify:
+                for host_name in v.hosts:
+                    if not host_in_list(host_name, cert.alt_names):
+                        raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
 
-    def _parse_private_keys(self, keys: dict):
-        # convert bare certificate definitions to private key definitions
-        for key_name, key_spec in keys.items():
-            if key_name not in self.private_keys:
-                self.private_keys[key_name] = PrivateKeySpec(key_spec, self.settings)
-            else:
-                # FIXME: merge properties
-                raise AcmeError('[config] Private Key "{}" already configured', key_name)
-
-            for certificate_name, certificate_spec in key_spec.get('certificates', {}).items():
-                if certificate_name not in self.private_keys[key_name].certificates:
-                    self.private_keys[key_name].certificates[certificate_name] = CertificateSpec(
-                        certificate_name, certificate_spec, self.private_keys[key_name].key_types, self.settings)
-                else:
-                    raise AcmeError('[config] Certificate "{}" already configured', certificate_name)
+            self.certificates[certificate_name] = cert
 
     def _validate_settings(self):
         default_verify = self.list('verify')
@@ -429,38 +404,6 @@ class Configuration(object):
             if get_device_id(dirpath) != temp_device:
                 raise AcmeError('[config] Temp directory must be on same device as "{}" directory', dirname)
         FileTransaction.tempdir = temp_dir
-
-    def _validate_keys(self):
-        for private_key_name, pk_spec in self.private_keys.items():
-            key_certificates = pk_spec.certificates
-            if not key_certificates:
-                raise AcmeError('[config] No certificates defined for private key "{}"', private_key_name)
-
-            certificate_key_types = set()
-            for certificate_name, certificate_spec in key_certificates.items():
-                overlap_hosts = certificate_spec.alt_names
-                for host_name in certificate_spec.alt_names:
-                    overlap_hosts = overlap_hosts[1:]
-                    overlap_host_name = host_in_list(host_name, overlap_hosts)
-                    if overlap_host_name:
-                        raise AcmeError('[config] alt_name "{}" conflicts with "{}" in certificate "{}"', host_name, overlap_host_name, certificate_name)
-
-                # Validate requested key types
-                for ty in certificate_spec.key_types:
-                    if ty not in pk_spec.key_types:
-                        raise AcmeError('[config] certificate request key type "{}" but parent private key "{}" don\'t support it', ty, private_key_name)
-                    certificate_key_types.add(ty)
-
-                verify = certificate_spec.verify
-                if verify:
-                    for v in verify:
-                        for host_name in v.hosts or ():
-                            if not host_in_list(host_name, certificate_spec.alt_names):
-                                raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
-
-            pk_spec.key_types = pk_spec.key_types.intersection(certificate_key_types)
-            if not pk_spec.key_types:
-                raise AcmeError("[config] inconsistent key_types for private key '{}'", private_key_name)
 
     def _parse_authorizations(self, values):
         for zone, names in values.items():

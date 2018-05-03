@@ -30,19 +30,6 @@ behind a firewall and does not have the ability to perform authorizations over h
 but still needs to obtain and periodically renew one or more certificates.
 
 
-Sharing of Private Keys Between Certificates
---------------------------------------------
-
-This tool allows multiple certificates to be defined using the same public/private key pair.
-
-
-Automatic Management of Backup Private Keys
--------------------------------------------
-
-This tool automatically generates backup keys and switches to the pre-generated backup key when rolling over private keys.
-Rolling over private keys can be done automatically and is scheduled independently of certificate expiration.
-
-
 Parallel RSA and ECDSA Certificates
 -----------------------------------
 
@@ -74,23 +61,6 @@ Encrypted Private Keys
 ----------------------
 
 Primary and backup private keys can optionally be encrypted using a passphrase and cipher of your choice.
-
-
-Mixed Use of DNS and HTTP Authorization
----------------------------------------
-
-By default this tool performs dns-01 authorizartions for domain validation.
-It is possible to configure overrides for specific domains names to use http-01 authorization instead.
-This is useful for situations where a domain outside your immediate control has provided an alias to your web site.
-
-
-Automatic Local or Remote DNS Updates
--------------------------------------
-
-This tool can automatically add and remove DNS records for dns-01 authorizations as well as TLSA records.
-Updates to a local server can be made via an external zone file processor, such as `bindtool`_,
-or to a remote DNS server via RFC 2136 dynamic DNS updates using ``nsupdate``.
-The choice between local and remote DNS updates can be made on a zone by zone basis.
 
 
 Configurable Output File Names
@@ -514,14 +484,6 @@ All of these need only be present when the desired value is different from the d
 * ``file_group`` speficies the name of the group that will own certificate and private key files.
   The default value is ``"ssl-cert"``.
   Note that this tool must run as root, or another user that has rights to set the file ownership to this group.
-* ``hpkp_days`` specifies the number of days that HPKP pins should be cached for.
-  The default value is ``60``.
-  HPKP pin files can be turned off by setting this value to ``0`` or ``null``.
-* ``pin_subdomains`` specifies whether the ``includeSubdomains`` directive should be included in the HPKP headers.
-  The default value is ``true``.
-* ``hpkp_report_uri`` specifies the uri to report HPKP failures to.
-  The default value is ``null``.
-  If not null, the ``report-uri`` directive will be included in the HPKP headers.
 * ``ocsp_must_staple`` specifies if the OCSP Must-Staple extension is added to certificates.
   The default value is ``false``.
 * ``ocsp_responder_urls`` specifies the list of OCSP responders to use if a certificate doesn't provide them.
@@ -531,21 +493,8 @@ All of these need only be present when the desired value is different from the d
   The value ``["google_testtube"]`` can be used with the Let's Encrypt staging environment for testing.
 * ``renewal_days`` specifies the number of days before expiration when the tool will attempt to renew a certificate.
   The default value is ``30``.
-* ``expiration_days`` specifies the number of days that private keys should be used for.
-  The dafault value is ``730`` (two years).
-  When the backup key reaches this age,
-  the tool will notify the user that a key rollover should be performed,
-  or automatically rollover the private key if ``auto_rollover`` is set to ``true``.
-  Automatic rollover and expiration notices can be disabled by setting this to ``0`` or ``null``.
-* ``auto_rollover`` specifies if the tool should automatically rollover private keys that have expired.
-  The default value is ``false``.
-  Note that when running in a master/follower configuration and sharing private keys between the master and follower,
-  key rollovers must be performed on the master and manually transferred to the follower,
-  therefore automatic rollovers should not be used unless running stand-alone.
 * ``max_dns_lookup_attempts`` specifies the number of times to check for deployed DNS records before attempting authorizations.
   The default value is ``60``.
-* ``dns_lookup_delay`` specifies the number of seconds to wait between DNS lookups.
-  The default value is ``10``.
 * ``max_domains_per_order`` specifies the maximum number of domains allowed per authorization order.
   The default value is ``100``, which is the limit set by Let's Encrypt.
 * ``max_authorization_attempts`` specifies the number of times to check for completed authorizations.
@@ -566,11 +515,6 @@ All of these need only be present when the desired value is different from the d
 * ``acme_directory_url`` specifies the primary URL for the ACME service.
   The default value is ``"https://acme-v02.api.letsencrypt.org/directory"``, the Let's Encrypt production API.
   You can substitute the URL for Let's Encrypt's staging environment or another certificate authority.
-* ``reload_zone_command`` specifies the command to execute to reload local DNS zone information.
-  When using `bindtool`_ the ``"reload-zone.sh"`` script provides this service.
-  If not using local DNS updates, you may set this to ``null`` to avoid warnings.
-* ``nsupdate_command`` specifies the command to perform DNS updates.
-  The default value is ``"/usr/bin/nsupdate"``.
 * ``verify`` specifies the default ports to perform installation verification on.
   The default value is ``null``.
 
@@ -589,24 +533,15 @@ Example::
             "ecparam_curve": "secp384r1",
             "file_user": "root",
             "file_group": "ssl-cert",
-            "hpkp_days": 60,
-            "pin_subdomains": true,
-            "hpkp_report_uri": null,
             "ocsp_must_staple": false,
             "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
             "ct_submit_logs": ["google_icarus", "google_pilot"],
             "renewal_days": 30,
-            "expiration_days": 730,
-            "auto_rollover": false,
-            "max_dns_lookup_attempts": 60,
-            "dns_lookup_delay": 10,
             "max_authorization_attempts": 30,
             "authorization_delay": 10,
             "min_run_delay": 300,
             "max_run_delay": 3600,
             "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory",
-            "reload_zone_command": "/etc/bind/reload-zone.sh",
-            "nsupdate_command": "/usr/bin/nsupdate",
             "verify": [443]
         },
         ...
@@ -628,10 +563,6 @@ All of these need only be present when the desired value is different from the d
   The default value is ``"/var/local/acmebot"``.
 * ``private_key`` specifies the directory to store primary private key files.
   The default value is ``"/etc/ssl/private"``.
-* ``backup_key`` specifies the directory to store backup private key files.
-  The default value is ``"/etc/ssl/private"``.
-* ``previous_key`` specifies the directory to store previously used private key files after key rollover.
-  The default value is ``null``.
 * ``full_key`` specifies the directory to store primary private key files that include the certificate chain.
   The default value is ``"/etc/ssl/private"``.
   Full key files may be omitted by setting this to ``null``.
@@ -646,21 +577,14 @@ All of these need only be present when the desired value is different from the d
 * ``param`` specifies the directory to store Diffie-Hellman parameter files.
   The default value is ``"/etc/ssl/params"``.
   Paramater files may be omitted by setting this to ``null``.
-* ``challenge`` specifies the directory to store ACME dns-01 challenge files.
-  The default value is ``"/etc/ssl/challenge"``.
 * ``http_challenge`` specifies the directory to store ACME http-01 challenge files.
   The default value is ``null``.
-* ``hpkp`` specifies the directory to store HPKP header files.
-  The default value is ``"/etc/ssl/hpkp"``.
-  HPKP header files may be turned off by setting this to ``null``.
 * ``sct`` specifies the directory to store Signed Certificate Timestamp files.
   The default value is ``"/etc/ssl/scts/<certificate-name>/<key-type>"``.
   SCT files may be turned off by setting this to ``null``.
 * ``ocsp`` specifies the directory to store OCSP response files.
   The default value is ``"/etc/ssl/ocsp"``.
   OCSP response files may be turned off by setting this to ``null``.
-* ``update_key`` specifies the directory to search for DNS update key files.
-  The default value is ``"/etc/ssl/update_keys"``.
 * ``archive`` specifies the directory to store older versions of files that are replaced by this tool.
   The default value is ``"/etc/ssl/archive"``.
 * ``temp`` specifies the directory to write temporary files to.
@@ -677,18 +601,14 @@ Example::
             "log": "/var/log/acmebot",
             "resource": "/var/local/acmebot",
             "private_key": "/etc/ssl/private",
-            "backup_key": "/etc/ssl/private",
             "full_key": "/etc/ssl/private",
             "certificate": "/etc/ssl/certs",
             "full_certificate": "/etc/ssl/certs",
             "chain": "/etc/ssl/certs",
             "param": "/etc/ssl/params",
-            "challenge": "/etc/ssl/challenges",
             "http_challenge": "/var/www/{zone}/{host}/.well-known/acme-challenge",
-            "hpkp": "/etc/ssl/hpkp",
             "ocsp": "/etc/ssl/ocsp/",
             "sct": "/etc/ssl/scts/{name}/{key_type}",
-            "update_key": "/etc/ssl/update_keys",
             "archive": "/etc/ssl/archive"
         },
         ...
@@ -792,22 +712,6 @@ The name of each certificate is used as the name of the certificate files.
   A value of ``null`` or ``false`` will result in private keys being written unencrypted.
   A value of ``true`` will cause the password to be read from the command line, the environment, a prompt, or stdin.
   A string value will be used as the passphrase without further input.
-* ``expiration_days`` specifies the number of days that the backup private key should be considered valid.
-  The default value is the value specified in the ``settings`` section.
-  When the backup key reaches this age,
-  the tool will notify the user that a key rollover should be performed,
-  or automatically rollover the private key if ``auto_rollover`` is set to ``true``.
-  Automatic rollover and expiration notices can be disabled by setting this to ``0`` or ``null``.
-* ``auto_rollover`` specifies if the tool should automatically rollover the private key when it expires.
-  The default value is the value specified in the ``settings`` section.
-* ``hpkp_days`` specifies the number of days that HPKP pins should be cached by clients.
-  The default value is the value specified in the ``settings`` section.
-  HPKP pin files can be turned off by setting this value to ``0`` or ``null``.
-* ``pin_subdomains`` specifies whether the ``includeSubdomains`` directive should be included in the HPKP headers.
-  The default value is the value specified in the ``settings`` section.
-* ``hpkp_report_uri`` specifies the uri to report HPKP errors to.
-  The default value is the value specified in the ``settings`` section.
-  If not null, the ``report-uri`` directive will be included in the HPKP headers.
 * ``ocsp_must_staple`` specifies if the OCSP Must-Staple extension is added to certificates.
   The default value is the value specified in the ``settings`` section.
 * ``ocsp_responder_urls`` specifies the list of OCSP responders to use if a certificate doesn't provide them.
@@ -836,181 +740,12 @@ Example::
                 "key_curve": "secp384r1",
                 "key_cipher": "blowfish",
                 "key_passphrase": null,
-                "expiration_days": 730,
-                "auto_rollover": false,
-                "hpkp_days": 60,
-                "pin_subdomains": true,
-                "hpkp_report_uri": null,
                 "ocsp_must_staple": false,
                 "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
                 "ct_submit_logs": ["google_icarus", "google_pilot"],
                 "verify": [443]
             }
         }
-    }
-
-
-Private Keys
-------------
-
-This section defines the set of private keys generated and their associated certificates.
-Multiple certificates may share a single private key.
-This is useful when it is desired to use different certificates for certain subdomains,
-while specifying HPKP headers for a root domain that also apply to subdomains.
-
-The name of each private key is used as the file name for the private key files.
-
-Note that a certificate configured in the ``certificates`` section is equivalent to a private key configured in this section with a single certificate using the same name as the private key.
-As such, it is an error to specify a certificate using the same name in both the ``certificates`` and ``private_keys`` sections.
-
-The private key and certificate settings are identical to those specified in the ``certificates`` section,
-except settings relevant to the private key: ``key_size``, ``key_curve``, ``key_cipher``, ``key_passphrase``, ``expiration_days``, ``auto_rollover``, ``hpkp_days``, ``pin_subdomains``, and ``hpkp_report_uri`` are specified in the private key object rather than the certificate object.
-The ``key_types`` setting may be specified in the certificate, private key, or both.
-
-Example::
-
-    {
-        ...
-        "private_keys": {
-            "example.com": {
-                "certificates": {
-                    "example.com": {
-                        "common_name": "example.com",
-                        "alt_names": {
-                            "example.com": ["@", "www"]
-                        },
-                        "services": ["nginx"],
-                        "key_types": ["rsa"],
-                        "dhparam_size": 2048,
-                        "ecparam_curve": "secp384r1",
-                        "ocsp_must_staple": true,
-                        "ct_submit_logs": ["google_icarus", "google_pilot"],
-                        "verify": [443]
-                    },
-                    "mail.example.com": {
-                        "alt_names": {
-                            "example.com": ["mail", "smtp"]
-                        },
-                        "services": ["dovecot", "postfix"],
-                        "key_types": ["rsa", "ecdsa"]
-                    }
-                },
-                "key_types": ["rsa", "ecdsa"],
-                "key_size": 4096,
-                "key_curve": "secp384r1",
-                "key_cipher": "blowfish",
-                "key_passphrase": null,
-                "expiration_days": 730,
-                "auto_rollover": false,
-                "hpkp_days": 60,
-                "pin_subdomains": true,
-                "hpkp_report_uri": null
-            }
-        },
-        ...
-    }
-
-The above example will generate a single primary/backup private key set and two certificates, ``example.com`` and ``mail.example.com`` both using the same private keys.
-An ECDSA certicicate will only be generated for ``mail.example.com``.
-
-
-TLSA Records
-------------
-
-When using remote DNS updates,
-it is possible to have the tool automatically maintain TLSA records for each certificate.
-Note that this requires configuring zone update keys for each zone containing a TLSA record.
-
-When using local DNS updates, the ``reload_zone`` command will be called after certificates are issued, renewed, or modified to allow TLSA records to be updated by a tool such as `bindtool`_.
-The ``reload_zone`` command will not be called in follower mode.
-
-To specify TLSA records, add a ``tlsa_records`` name/object pair to each certificate definition, either in the ``certificates`` or ``private_keys`` section.
-TLSA records are specified per DNS zone, similar to ``alt_names``,
-to specify which zone should be updated for each TLSA record.
-
-For each zone in the TLSA record object,
-specify a list of either host name strings or objects.
-Using a host name sting is equivalent to::
-
-    {
-        "host": "<host-name>"
-    }
-
-The values for the objects are:
-
-* ``host`` specifies the host name for the TLSA record.
-  The default value is ``"@"``.
-  The host name ``"@"`` is used for the name of the zone itself.
-* ``port`` specifies the port number for the TLSA record.
-  The default value is ``443``.
-* ``usage`` is one of the following: ``"pkix-ta"``, ``"pkix-ee"``, ``"dane-ta"``, or ``"dane-ee"``.
-  The default value is ``"pkix-ee"``.
-  When specifying an end effector TLSA record (``"pkix-ee"`` or ``"dane-ee"``),
-  the hash generated will be of the certificate or public key itself.
-  When specifying a trust anchor TLSA record (``"pkix-ta"`` or ``"dane-ta"``),
-  records will be generated for each of the intermediate and root certificates.
-* ``selector`` is one of the following: ``"cert"``, or ``"spki"``.
-  The default value is ``"spki"``.
-  When specifying a value of ``"spki"`` and an end effector usage,
-  records will be generated for both the primary and backup public keys.
-* ``protocol`` specifies the protocol for the TLSA record.
-  The default value is ``"tcp"``.
-* ``ttl`` specifies the TTL value for the TLSA records.
-  The default value is ``300``.
-
-Example::
-
-    {
-        ...
-        "private_keys": {
-            "example.com": {
-                "certificates": {
-                    "example.com": {
-                        "alt_names": {
-                            "example.com": ["@", "www"]
-                        },
-                        "services": ["nginx"],
-                        "tlsa_records": {
-                            "example.com": [
-                                "@",
-                                {
-                                    "host": "www",
-                                    "port": 443,
-                                    "usage": "pkix-ee",
-                                    "selector": "spki",
-                                    "protocol": "tcp",
-                                    "ttl": 300
-                                }
-                            ]
-                        }
-                    },
-                    "mail.example.com": {
-                        "alt_names": {
-                            "example.com": ["mail", "smtp"]
-                        },
-                        "services": ["dovecot", "postfix"],
-                        "tlsa_records": {
-                            "example.com": [
-                                {
-                                    "host": "mail",
-                                    "port": 993
-                                },
-                                {
-                                    "host": "smtp",
-                                    "port": 25,
-                                    "usage": "dane-ee"
-                                },
-                                {
-                                    "host": "smtp",
-                                    "port": 587
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        ...
     }
 
 
@@ -1092,66 +827,6 @@ To use dns-01 authorizations for selected domain names,
 add an ``http_challenges`` entry configured with a ``null`` value.
 
 
-Zone Update Keys
-----------------
-
-When using remote DNS updates,
-it is necessary to specify a TSIG key used to sign the update requests.
-
-For each zone using remote DNS udpates,
-specify either a string containing the file name of the TSIG key,
-or an object with further options.
-
-The TSIG file name may an absolute path or a path relative to the ``update_key`` directory setting.
-Both the ``<key-file>.key`` file and the ``<key-file>.private`` files must be present.
-
-Any zone referred to in a certificate, private key, or authorization that does not have a corresponding zone update key will use local DNS updates unless an HTTP challenge directory has been specified for every host in that zone.
-
-* ``file`` specifies the name of the TSIG key file.
-* ``server`` specifies the name of the DNS server to send update requests to.
-  If omitted, the primary name server from the zone's SOA record will be used.
-* ``port`` specifies the port to send update requests to.
-  The default value is ``53``.
-
-Example::
-
-    {
-        ...
-        "zone_update_keys": {
-            "example1.com": "update.example1.com.key",
-            "example2.com": {
-                "file": "update.example2.com.key",
-                "server": "ns1.example2.com",
-                "port": 53
-            }
-        },
-        ...
-    }
-
-
-Key Type Suffix
----------------
-
-Each certificate and key file will have a suffix, just before the file extension,
-indicating the type of key the file is for.
-
-The default suffix used for each key type can be overridden in the ``key_type_suffixes`` section.
-If you are only using a single key type, or want to omit the suffix from one key type,
-set it to an empty string.
-Note that if using multiple key types the suffix must be unique or files will be overridden.
-
-Example::
-
-    {
-        ...
-        "key_type_suffixes": {
-            "rsa": ".rsa",
-            "ecdsa": ".ecdsa"
-        },
-        ...
-    }
-
-
 File Name Patterns
 ------------------
 
@@ -1167,8 +842,6 @@ The ``name`` field is the name of the private key or certificate.
 * ``full_certificate`` specifies the name of certificate files that include the root certificate.
 * ``chain`` specifies the name of intemediate certificate files.
 * ``param`` specifies the name of Diffie-Hellman parameter files.
-* ``challenge`` specifies the name of ACME challenge files used for local DNS updates.
-* ``hpkp`` specifies the name of HPKP header files.
 * ``ocsp`` specifies the name of OCSP response files.
 * ``sct`` specifies the name of SCT files.
 
@@ -1184,36 +857,12 @@ Example::
             "full_certificate": "{name}+root{suffix}.pem",
             "chain": "{name}_chain{suffix}.pem",
             "param": "{name}_param.pem",
-            "challenge": "{name}",
-            "hpkp": "{name}.{server}",
             "ocsp": "{name}{suffix}.ocsp",
             "sct": "{ct_log_name}.sct"
         },
         ...
     }
 
-
-HPKP Headers
-------------
-
-This section defines the set of HPKP header files that will be generated and their contents.
-Header files for additional servers can be added at will,
-one file will be generated for each server.
-Using standard Python format strings, the ``{header}`` field will be replaced with the HPKP header,
-the ``{key_name}`` field will be replaced with the name of the private key,
-and ``{server}`` will be replaced with the server name.
-The default servers can be omitted by setting the header to ``null``.
-
-Example::
-
-    {
-        ...
-        "hpkp_headers": {
-            "apache": "Header always set Public-Key-Pins \"{header}\"\n",
-            "nginx": "add_header Public-Key-Pins \"{header}\" always;\n"
-        },
-        ...
-    }
 
 
 Certificate Transparency Logs
@@ -1252,26 +901,12 @@ Output from the hooks will be captured in the log.
 Hooks returing a non-zero status code will generate warnings,
 but will not otherwise affect the operation of this tool.
 
-* ``set_dns_challenge`` is called for each DNS challenge record that is set.
-  Available fields are ``domain``, ``zone``, and ``challenge``.
-* ``clear_dns_challenge`` is called for each DNS challenge record that is removed.
-  Available fields are ``domain``, ``zone``, and ``challenge``.
-* ``dns_zone_update`` is called when a DNS zone is updated via either local or remote updates.
-  Available field is ``zone``.
 * ``set_http_challenge`` is called for each HTTP challenge file that is installed.
   Available fields are ``domain``, and ``challenge_file``.
 * ``clear_http_challenge`` is called for each HTTP challenge file that is removed.
   Available fields are ``domain``, and ``challenge_file``.
-* ``private_key_rollover`` is called when a private key is replaced by a backup private key.
-  Available fields are ``key_name``, ``key_type``, ``backup_key_file``, ``private_key_file``, ``previous_key_file``, and ``passphrase``.
 * ``private_key_installed`` is called when a private key is installed.
   Available fields are ``key_name``, ``key_type``, ``private_key_file``, and ``passphrase``.
-* ``backup_key_installed`` is called when a backup private key is installed.
-  Available fields are ``key_name``, ``key_type``, ``backup_key_file``, and ``passphrase``.
-* ``previous_key_installed`` is called when a previous private key is installed after key rollover.
-  Available fields are ``key_name``, ``key_type``, ``previous_key_file``, and ``passphrase``.
-* ``hpkp_header_installed`` is called when a HPKP header file is installed.
-  Available fields are ``key_name``, ``server``, ``header``, and ``hpkp_file``.
 * ``certificate_installed`` is called when a certificate file is installed.
   Available fields are ``key_name``, ``key_type``, ``certificate_name``, and ``certificate_file``.
 * ``full_certificate_installed`` is called when a certificate file that includes the root is installed.
@@ -1320,10 +955,6 @@ When using an object, the avaialable fields are:
 * ``starttls`` specifies the STARTTLS mechanism that should be used to initiate a TLS session.
   Allowed values are: ``null``, ``smtp``, ``pop3``, ``imap``, ``sieve``, ``ftp``, and ``xmpp``.
   The default value is ``null``.
-* ``protocol`` specifies the protocol used to obtain additional information to verify.
-  Currently this can retrieve Public-Key-Pins http headers to ensure that they are properly set.
-  Allowed values are: ``null``, and ``http``.
-  The default value is ``null``.
 * ``hosts`` specifies a list of fully qualified domain names to test.
   This allows testing only a subset of the alternative names specified for the certificate.
   Each host name must be present as an alternative name for the certificate.
@@ -1338,8 +969,7 @@ Example::
         ...
         "verify": [
             {
-                "port": 443,
-                "protocol": "http"
+                "port": 443
             },
             {
                 "port": 25,
@@ -1352,107 +982,6 @@ Example::
         ...
     }
 
-
-Configuring Local DNS Updates
-=============================
-
-In order to perform dns-01 authorizations,
-and to keep TLSA records up to date,
-the tool will need to be able to add, remove, and update various DNS records.
-
-For updating DNS on a local server,
-this tool was designed to use a bind zone file pre-processor,
-such as `bindtool`_,
-but may be used with another tool instead.
-
-When using `bindtool`_, be sure to configure bindtool's ``acme_path`` to be equal to the value of the ``challenge`` directory, so that it can find the ACME challenge files.
-
-When the tool needs to update a DNS zone, it will call the configured ``reload_zone`` command with the name of the zone as its argument.
-When _acme-challenge records need to be set, a file will be placed in the ``challenge`` directory with the name of the zone in question, e.g. ``/etc/ssl/challenges/example.com``.
-The challenge file is a JSON format file containing a single object.
-The name/value pairs of that object are the fully qualified domain names of the records needing to be set, and the values of the records, e.g.::
-
-    {
-        "www.example.com": "gfj9Xq...Rg85nM"
-    }
-
-Which should result in the following DNS record created in the zone::
-
-    _acme-challenge.www.example.com. 300 IN TXT "gfj9Xq...Rg85nM"
-
-Note that domain names containing wildcards must have the wildcard component removed in the corresponding TXT record, e.g.::
-
-    {
-        "example.com": "jc87sd...kO89hG"
-        "*.example.com": "gfj9Xq...Rg85nM"
-    }
-
-Must result in the following DNS records created in the zone::
-
-    _acme-challenge.example.com. 300 IN TXT "jc87sd...kO89hG"
-    _acme-challenge.example.com. 300 IN TXT "gfj9Xq...Rg85nM"
-
-If there is no file in the ``challenge`` directory with the same name as the zone, all _acme-challenge records should be removed.
-
-Any time the ``reload_zone`` is called, it should also update any TLSA records asscoiated with the zone based on the certificates or private keys present.
-
-All of these functions are provided automatically by `bindtool`_ via the use of ``{{acme:}}`` and ``{{tlsa:}}`` commands in the zone file.
-For example, the zone file::
-
-    {{soa:ns1.example.com:admin@example.com}}
-
-    {{ip4=192.0.2.0}}
-
-    @   NS  ns1
-    @   NS  ns2
-
-    @   A   {{ip4}}
-    www A   {{ip4}}
-
-    {{tlsa:443}}
-    {{tlsa:443:www}}
-
-    {{acme:}}
-
-    {{caa:letsencrypt.org}}
-
-Will define the zone ``example.com`` using the nameservers ``ns1.example.com`` and ``ns1.example.com``, providing the hosts ``example.com`` and ``www.example.com``, with TLSA records pinning the primary and backup keys.
-
-
-Configuring Remote DNS Updates
-==============================
-
-If the tool is not run on a machine also hosting a DNS server, then http-01 authorizations or remote DNS updates must be used.
-
-The use remote DNS udpates via RFC 2136 dynamic updates,
-configure a zone update key for each zone.
-See the `Zone Update Keys <#zone-update-keys>`_ section for more information.
-
-It is also necesary to have the ``nsupdate`` tool installed and the ``nsupdate_command`` configured in the ``settings`` configuration section.
-
-Zone update keys may be generated via the ``dnssec-keygen`` tool.
-
-For example::
-
-    dnssec-keygen -r /dev/urandom -a HMAC-MD5 -b 512 -n HOST update.example.com
-
-will generate two files, named Kupdate.example.com.+157+NNNNN.key and Kupdate.example.com.+157+NNNNN.private.
-Specify the .key file as the zone update key.
-
-To configure bind to allow remote DNS updates, add an entry to named.conf.keys for the update key containg the key value from the private key file, e.g.::
-
-    key update.example.com. {
-        algorithm hmac-md5;
-        secret "sSeWrBDen...9WESlnEwQ==";
-    };
-
-and then add an ``allow-update`` entry to the zone configuration, e.g.::
-
-    zone "example.com" {
-        type master;
-        allow-update { key update.example.com.; };
-        ...
-    };
 
 
 Running the Tool
@@ -1542,46 +1071,6 @@ The output can be colorized by type by adding the ``--color`` option,
 or colorized output can be suppressed via the ``--no-color`` option.
 
 
-Private Key Rollover
---------------------
-
-During normal operations the private keys for certificates will not be modified,
-this allows renewing or modifying certificates without the need to update associated pinning information,
-such as HPKP headers or TLSA records using spki selectors.
-
-However, it is a good security practice to replace the private keys at regular intervals,
-or immediately if it is believed that the primary private key may have been compromised.
-This tool maintains a backup private key for each primary private key and generates pinning information including the backup key as appropriate to allow smooth transitions to the backup key.
-
-When the backup private key reaches the age specified via the ``expiration_days`` setting,
-the tool will notify you that it is time to rollover the private key,
-unless the ``auto_rollover`` setting has been set to ``true``,
-in which case it will automatically perform the rollover.
-
-The rollover process will archive the current primary private key,
-re-issue certificates using the existing backup key as the new primary key,
-generate a new backup private key,
-generate new custom Diffie-Hellman parameters,
-and reset HPKP headers and TLSA records as appropriate.
-
-If the ``previous_key`` directory is specified,
-the current primary private key will be stored in that directory as a previous private key.
-While previous private key files are present,
-their key signatures will be added to HPKP pins and TLSA records.
-This can assist in key rollover when keys are pinned for subdomains and private keys are shared between multiple servers.
-Once the new primary and backup keys have been distributed to the other servers,
-the previous private key file may be safely removed.
-
-To manually rollover private keys, simply run the tool with the ``--rollover`` option.
-You can specify the names of individual private keys on the command line to rollover,
-otherwise all private keys will be rolled over.
-
-Note that the tool will refuse to rollover a private key if the current backup key is younger than the HPKP duration.
-A private key rollover during this interval may cause a web site to become inaccessable to clients that have previously cached HPKP headers but not yet retrieved the current backup key pin.
-If it is necessary to rollover the private key anyway,
-for example if it is believed that the backup key has been compromised as well,
-add the ``--force`` option on the command line to force the private key rollover.
-
 
 Forced Certificate Renewal
 --------------------------
@@ -1621,11 +1110,6 @@ Certificates Only
 Use of the ``--certs`` option on the command line will limit the tool to only issuing and renewing certificates and keys,
 and updating related files such as Diffie-Hellman paramaters and HPKP headers.
 
-
-Remote TLSA Updates
--------------------
-
-Use of the ``--tlsa`` option on the command line will limit the tool to only verifying and updating configured TLSA records via remote DNS updates.
 
 
 Signed Certificate Timestamp Updates
