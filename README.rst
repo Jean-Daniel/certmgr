@@ -9,7 +9,6 @@ ACME protocol automatic certitificate manager.
 This tool acquires and maintains certificates from a certificate authority using the ACME protocol, similar to EFF's Certbot.
 While developed and tested using Let's Encrypt, the tool should work with any certificate authority using the ACME protocol.
 
-
 Features
 ========
 
@@ -19,6 +18,28 @@ or provide a server to perform stand-alone domain validation.
 It does however, do a few things that Certbot does not,
 simplifying certificate manangement in more advanced environments.
 
+Note about the fork
+========
+
+This fork is a stripped down version of the original tool. It supports only http challenge (no DNS support) and remove all the shared private key stuff to manage simple certificate/private key pair that are always renew together.
+
+It also provide a additional functionality: creating an organized fs view of the generated certificates using domains names instead of internal certificate name.
+
+For instance, if you create a certificate named ``mysite`` with 2 DNS names www.example.com and mail.example.com, this tools can create the following directory layout::
+
+    rootdir/
+        www.example.com/
+            cert.ecdsa.pem
+            cert.rsa.pem
+            ecdsa.key
+            rsa.key
+            …
+        mail.example.com/
+            …
+
+This directory only contains symlinks to the original acmebot files. It is useful to be able to configure your services without having to know the acmebot configuration internal.
+
+If you decide to update the configuration to create 2 certificates (one for www and one for mail), or simply change the certificate internal name, you don't have to reconfigure all your services.
 
 Master/Follower Mode
 -----------------
