@@ -175,6 +175,7 @@ def save_certificate(certificate_file, certificate, chain=None, root_certificate
 
     if dhparam_pem:
         certificate_file.write('\n' + dhparam_pem)
+    if ecparam_pem:
         certificate_file.write('\n' + ecparam_pem)
 
 
