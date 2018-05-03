@@ -9,6 +9,7 @@ import OpenSSL
 from OpenSSL.crypto import X509, PKey
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
 
 
@@ -84,6 +85,10 @@ def public_key_bytes(private_key: PKey):
     if private_key:
         return private_key.to_cryptography_key().public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     return None
+
+
+def private_key_export(private_key: RSAPrivateKey):
+    return private_key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
 
 
 def certificate_public_key_bytes(certificate):

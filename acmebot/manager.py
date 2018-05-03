@@ -35,7 +35,8 @@ from . import PrivateKeyError, log, AcmeError
 from .config import Configuration
 from .crypto import save_chain, check_dhparam, check_ecparam, certificate_bytes, save_certificate, private_key_matches_options, private_key_descripton, \
     generate_private_key, get_alt_names, private_key_matches_certificate, has_oscp_must_staple, \
-    datetime_from_asn1_generaltime, generate_csr, decode_full_chain, get_dhparam_size, generate_dhparam, get_ecparam_curve, generate_ecparam, certificates_match
+    datetime_from_asn1_generaltime, generate_csr, decode_full_chain, get_dhparam_size, generate_dhparam, get_ecparam_curve, generate_ecparam, \
+    certificates_match, private_key_export
 from .ocsp import load_ocsp_response, ocsp_response_status, ocsp_response_serial_number, ocsp_response_this_update, fetch_ocsp_response
 from .utils import FileTransaction, makedir, open_file, ColorFormatter, rename_file, host_in_list, fetch_tls_info, process_running
 
@@ -139,6 +140,9 @@ class AcmeManager(object):
         argparser.add_argument('-V', '--verify',
                                action='store_true', dest='verify', default=False,
                                help='Verify certificate installation only')
+        argparser.add_argument('--export-client',
+                               action='store_true', dest='export_client', default=False,
+                               help='Export client key')
         argparser.add_argument('-p', '--pass', nargs=1, default=False,
                                action='store', dest='passphrase', metavar='PASSPHRASE',
                                help='Passphrase for private keys')
@@ -533,6 +537,16 @@ class AcmeManager(object):
     def _generate_client_key(self):
         self.client_key = josepy.JWKRSA(key=rsa.generate_private_key(public_exponent=65537, key_size=4096, backend=default_backend()))
 
+    def export_client_key(self):
+        client_key_pem = private_key_export(self.client_key.key)
+        client_key_file_path = 'acmebot_client_key.pem'
+        try:
+            with open(client_key_file_path, 'w') as client_key_file:
+                client_key_file.write(client_key_pem.decode('ascii'))
+                logging.info('Client key exported to %s', client_key_file_path)
+        except Exception as error:
+            logging.error('Unbale to write client key to %s: %s', client_key_file_path, str(error))
+
     def connect_client(self):
         resource_dir = os.path.join(self.script_dir, self.config.directory('resource'))
         makedir(resource_dir, 0o600)
@@ -869,6 +883,7 @@ class AcmeManager(object):
             log.debug('Processing certificate %s', certificate_name)
 
             cert_data = CertificateData(certificate_name, cert_spec)
+
             # For each types, check if the cert exists and is valid (params match and not about to expire)
             for key_type in cert_spec.key_types:
                 cert_item = cert_data.certificates[key_type]
@@ -1386,7 +1401,7 @@ class AcmeManager(object):
             pid_file.write(str(os.getpid()))
         try:
             if (not (
-                    self.args.revoke or self.args.auth or self.args.certs or self.args.sct or self.args.ocsp or self.args.symlink or self.args.verify)):
+                    self.args.revoke or self.args.auth or self.args.certs or self.args.sct or self.args.ocsp or self.args.symlink or self.args.verify or self.args.export_client)):
                 self.args.auth = True
                 self.args.certs = True
                 self.args.sct = True
@@ -1394,7 +1409,7 @@ class AcmeManager(object):
                 self.args.symlink = True
                 self.args.verify = True
 
-            if self.args.revoke or self.args.auth or self.args.certs:
+            if self.args.revoke or self.args.auth or self.args.certs or self.args.export_client:
                 self.connect_client()
 
             if self.args.revoke:
@@ -1420,6 +1435,8 @@ class AcmeManager(object):
                 self._call_hooks()
             if self.args.verify:
                 self.verify_certificate_installation(self.args.private_key_names)
+            if self.args.export_client:
+                self.export_client_key()
             self.disconnect_client()
         finally:
             os.remove(pid_file_path)
