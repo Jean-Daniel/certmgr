@@ -132,7 +132,7 @@ class CertificateSpec(object):
         self.ocsp_responder_urls = get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
 
         self.ct_submit_logs = get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs'])
-        self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify')] or defaults['verify']
+        self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
 
 
 class Configuration(object):
@@ -165,7 +165,6 @@ class Configuration(object):
                         values['follower_mode'] = values['slave_mode']
                         del values['slave_mode']
                     _merge('settings', cfg.settings, values)
-                    cfg._validate_settings()
                 elif section == 'directories':
                     _merge('directories', cfg.directories, values)
                     cfg._validate_directories()
@@ -376,11 +375,6 @@ class Configuration(object):
                         raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
 
             self.certificates[certificate_name] = cert
-
-    def _validate_settings(self):
-        default_verify = self.list('verify')
-        if default_verify:
-            self.settings['verify'] = [VerifyTarget(spec) for spec in default_verify]
 
     def _validate_directories(self):
         base = os.path.dirname(self.path)
