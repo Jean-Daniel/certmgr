@@ -884,6 +884,10 @@ class AcmeManager(object):
 
             cert_data = CertificateData(certificate_name, cert_spec)
 
+            # if we do not force refresh params
+            if not self.args.rollover:
+                cert_data.params = self.load_params(certificate_name)
+
             # For each types, check if the cert exists and is valid (params match and not about to expire)
             for key_type in cert_spec.key_types:
                 cert_item = cert_data.certificates[key_type]
@@ -920,41 +924,38 @@ class AcmeManager(object):
                     log.debug('New %s certificate issued', key_type.upper())
                     cert_data.params = CertParams(None, None)
                     cert_item.updated = True
-                elif not self.args.rollover:
-                    # if we do not force refresh params
-                    cert_data.params = self.load_params(certificate_name)
 
-                # Updating dhparams
-                dhparam_size = cert_spec.dhparam_size
-                if cert_data.params.dhparams and dhparam_size and (dhparam_size != get_dhparam_size(cert_data.params.dhparams)):
-                    log.info('Diffie-Hellman parameters for %s are not %s bits', certificate_name, dhparam_size)
-                    cert_data.params.dhparams = None
-                # Remove existing params
-                if cert_data.params.dhparams and not dhparam_size:
-                    cert_data.params.dhparams = None
-                    cert_data.params_updated = True
-                elif (not cert_data.params.dhparams) and dhparam_size:
-                    log.info('Generating Diffie-Hellman parameters for %s', certificate_name)
-                    cert_data.params.dhparams = generate_dhparam(dhparam_size)
-                    if not cert_data.params.dhparams:
-                        raise AcmeError('Diffie-Hellman parameters generation failed for {} bits', dhparam_size)
-                    cert_data.params_updated = True
+            # Updating dhparams
+            dhparam_size = cert_spec.dhparam_size
+            if cert_data.params.dhparams and dhparam_size and (dhparam_size != get_dhparam_size(cert_data.params.dhparams)):
+                log.info('Diffie-Hellman parameters for %s are not %s bits', certificate_name, dhparam_size)
+                cert_data.params.dhparams = None
+            # Remove existing params
+            if cert_data.params.dhparams and not dhparam_size:
+                cert_data.params.dhparams = None
+                cert_data.params_updated = True
+            elif (not cert_data.params.dhparams) and dhparam_size:
+                log.info('Generating Diffie-Hellman parameters for %s', certificate_name)
+                cert_data.params.dhparams = generate_dhparam(dhparam_size)
+                if not cert_data.params.dhparams:
+                    raise AcmeError('Diffie-Hellman parameters generation failed for {} bits', dhparam_size)
+                cert_data.params_updated = True
 
-                # Updating ecparams
-                ecparam_curve = cert_spec.ecparam_curve
-                if cert_data.params.ecparams and ecparam_curve and (ecparam_curve != get_ecparam_curve(cert_data.params.ecparams)):
-                    log.info('Elliptical curve parameters for %s are not curve %s', certificate_name, ecparam_curve)
-                    cert_data.params.ecparams = None
-                # Remove existing params
-                if cert_data.params.ecparams and not ecparam_curve:
-                    cert_data.params.ecparams = None
-                    cert_data.params_updated = True
-                elif (not cert_data.params.ecparams) and ecparam_curve:
-                    log.info('Generating elliptical curve parameters for %s', certificate_name)
-                    cert_data.params.ecparams = generate_ecparam(ecparam_curve)
-                    if not cert_data.params.ecparams:
-                        raise AcmeError('Elliptical curve parameters generation failed for curve {}', ecparam_curve)
-                    cert_data.params_updated = True
+            # Updating ecparams
+            ecparam_curve = cert_spec.ecparam_curve
+            if cert_data.params.ecparams and ecparam_curve and (ecparam_curve != get_ecparam_curve(cert_data.params.ecparams)):
+                log.info('Elliptical curve parameters for %s are not curve %s', certificate_name, ecparam_curve)
+                cert_data.params.ecparams = None
+            # Remove existing params
+            if cert_data.params.ecparams and not ecparam_curve:
+                cert_data.params.ecparams = None
+                cert_data.params_updated = True
+            elif (not cert_data.params.ecparams) and ecparam_curve:
+                log.info('Generating elliptical curve parameters for %s', certificate_name)
+                cert_data.params.ecparams = generate_ecparam(ecparam_curve)
+                if not cert_data.params.ecparams:
+                    raise AcmeError('Elliptical curve parameters generation failed for curve {}', ecparam_curve)
+                cert_data.params_updated = True
 
             self.install_certificate(cert_data)
 
