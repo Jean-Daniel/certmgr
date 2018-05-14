@@ -3,7 +3,7 @@ import getpass
 import os
 import re
 import sys
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import collections
 from acme import messages, client
@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from . import AcmeError, log, SUPPORTED_KEY_TYPES
 from .config import CertificateSpec, FileManager
 from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam
+from .utils import makedir, archive_file
 
 SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
 KeyCipherData = collections.namedtuple('KeyCipherData', ['cipher', 'passphrase', 'forced'])
@@ -41,13 +42,21 @@ class CertificateItem(object):
         self._chain = self.UNINITIALIZED  # type: Optional[List[Certificate]]
         self._certificate = self.UNINITIALIZED  # type: Optional[Certificate]
 
+    @property
+    def name(self):
+        return self.context.name
+
+    @property
+    def spec(self):
+        return self.context.spec
+
     def order(self, acme_client: client.ClientV2, auth_only=False) -> messages.OrderResource:
         if self._order is self.UNINITIALIZED:
             if auth_only:
                 key = PrivateKey.create(self.type, self.params)
             else:
                 key = self.key
-            csr = key.create_csr(self.context.spec.common_name, self.context.spec.alt_names, self.context.spec.ocsp_must_staple)
+            csr = key.create_csr(self.spec.common_name, self.spec.alt_names, self.spec.ocsp_must_staple)
             self._order = acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
             if auth_only:
                 self._order.update(csr_pem=None)
@@ -60,13 +69,13 @@ class CertificateItem(object):
         if self._key is self.UNINITIALIZED:
             self._key = self._load_key()
             if not self._key:
-                log.debug("[%s] generating %s private key", self.context.name, self.type.upper())
+                log.debug("[%s] generating %s private key", self.name, self.type.upper())
                 self._key = PrivateKey.create(self.type, self.params)
                 self.updated = True
         return self._key
 
     def _load_key(self) -> Optional[PrivateKey]:
-        key_file_path = self.context.fs.filepath('private_key', self.context.name, self.type)
+        key_file_path = self.context.fs.filepath('private_key', self.name, self.type)
         try:
             return PrivateKey.load(key_file_path, lambda: self.context.key_cipher(force_prompt=True).passphrase)
         except Exception as e:
@@ -85,7 +94,7 @@ class CertificateItem(object):
         self.updated = True
 
     def _load_certificate(self):
-        cert_path = self.context.fs.filepath('certificate', self.context.name, self.type)
+        cert_path = self.context.fs.filepath('certificate', self.name, self.type)
         try:
             return Certificate.load(cert_path)
         except Exception as e:
@@ -98,55 +107,57 @@ class CertificateItem(object):
             return True
 
         if key.params != self.params:
-            log.info('[%s:%s] Private key is not %s', self.context.name, self.type.upper(), str(key))
+            log.info('[%s:%s] Private key is not %s', self.name, self.type.upper(), str(key))
             return True
 
-        if self.context.spec.common_name != certificate.common_name:
-            log.info('[%s:%s] Common name changed from %s to %s', self.context.name, self.type.upper(),
-                     certificate.common_name, self.context.spec.common_name)
+        if self.spec.common_name != certificate.common_name:
+            log.info('[%s:%s] Common name changed from %s to %s', self.name, self.type.upper(),
+                     certificate.common_name, self.spec.common_name)
             return True
 
-        new_alt_names = set(self.context.spec.alt_names)
+        new_alt_names = set(self.spec.alt_names)
         existing_alt_names = set(certificate.alt_names)
         if new_alt_names != existing_alt_names:
             added_alt_names = new_alt_names - existing_alt_names
             removed_alt_names = existing_alt_names - new_alt_names
-            added = ', '.join([alt_name for alt_name in self.context.spec.alt_names if (alt_name in added_alt_names)])
+            added = ', '.join([alt_name for alt_name in self.spec.alt_names if (alt_name in added_alt_names)])
             removed = ', '.join([alt_name for alt_name in certificate.alt_names if (alt_name in removed_alt_names)])
-            log.info('[%s:%s] Alt names changed%s%s', self.context.name, self.type.upper(),
+            log.info('[%s:%s] Alt names changed%s%s', self.name, self.type.upper(),
                      (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
             return True
 
         if not key.match_certificate(certificate):
-            log.info('[%s:%s] certificate public key does not match private key', self.context.name, self.type.upper())
+            log.info('[%s:%s] certificate public key does not match private key', self.name, self.type.upper())
             return True
 
-        if certificate.has_oscp_must_staple != self.context.spec.ocsp_must_staple:
-            log.info('[%s:%s] certificate %s ocsp_must_staple option', self.context.name, self.type.upper(),
+        if certificate.has_oscp_must_staple != self.spec.ocsp_must_staple:
+            log.info('[%s:%s] certificate %s ocsp_must_staple option', self.name, self.type.upper(),
                      'has' if certificate.has_oscp_must_staple else 'does not have')
             return True
 
         valid_duration = (certificate.not_after - datetime.datetime.utcnow())
         if valid_duration.days < 0:
-            log.info('[%s:%s] certificate has expired', self.context.name, self.type.upper())
+            log.info('[%s:%s] certificate has expired', self.name, self.type.upper())
             return True
         if valid_duration.days < renewal_days:
-            log.info('[%s:%s] certificate will expire in %s', self.context.name, self.type.upper(),
+            log.info('[%s:%s] certificate will expire in %s', self.name, self.type.upper(),
                      (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
             return True
 
         days_to_renew = valid_duration.days - renewal_days
-        log.debug('[%s:%s] certificate valid beyond renewal window (renew in %s %s)', self.context.name, self.type.upper(),
+        log.debug('[%s:%s] certificate valid beyond renewal window (renew in %s %s)', self.name, self.type.upper(),
                   days_to_renew, 'day' if (1 == days_to_renew) else 'days')
         return False
+
+    def archive_file(self, file_type, archive_date: datetime.datetime, **kwargs):
+        self.context.archive_file(file_type, archive_date, key_type=self.type, **kwargs)
 
 
 class CertificateContext(object):
 
     # __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
 
-    def __init__(self, name: str, spec: CertificateSpec, fs: FileManager):
-        self.name = name
+    def __init__(self, spec: CertificateSpec, fs: FileManager):
         self.spec = spec
         self.fs = fs
 
@@ -163,7 +174,11 @@ class CertificateContext(object):
         return self._items.__iter__()
 
     @property
-    def updated(self):
+    def name(self) -> str:
+        return self.spec.name
+
+    @property
+    def updated(self) -> bool:
         return self.params_updated or any(item.updated for item in self._items)
 
     @property
@@ -227,3 +242,8 @@ class CertificateContext(object):
                 ecparam_pem = None
             return CertParams(dhparam_pem, ecparam_pem)
         return CertParams(None, None)
+
+    def archive_file(self, file_type, archive_date=datetime.datetime.now(), **kwargs) -> Optional[Tuple[str, str]]:
+        file_path = self.fs.filepath(file_type, self.name, **kwargs)
+        archive_dir = self.fs.archive_dir(self.name)
+        return archive_file(file_type, file_path, archive_dir, archive_date)

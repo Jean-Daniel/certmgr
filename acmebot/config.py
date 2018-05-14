@@ -1,6 +1,8 @@
+import grp
 import json
 import logging
 import os
+import pwd
 import tempfile
 from collections import OrderedDict
 from typing import Iterable, Optional, Dict, Union, Tuple
@@ -8,7 +10,7 @@ from typing import Iterable, Optional, Dict, Union, Tuple
 import collections
 
 from . import AcmeError, log, SUPPORTED_KEY_TYPES
-from .utils import FileTransaction, get_device_id, host_in_list, makedir
+from .utils import FileTransaction, get_device_id, host_in_list, makedir, FileOwner
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
@@ -97,11 +99,12 @@ class PrivateKeySpec(object):
 
 
 class CertificateSpec(object):
-    __slots__ = ('private_key', 'common_name', 'alt_names',
+    __slots__ = ('name', 'private_key', 'common_name', 'alt_names',
                  'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
     def __init__(self, name, spec, defaults):
+        self.name = name
         self.private_key = PrivateKeySpec(spec, defaults)
         self.common_name = spec.get('common_name', name).strip().lower()
         alt_names = spec.get('alt_names')
@@ -208,6 +211,10 @@ class FileManager(object):
 
     def directory(self, file_type: str) -> Optional[str]:
         return self._directories[file_type]
+
+    def archive_dir(self, name: str) -> Optional[str]:
+        archive = self.directory('archive')
+        return os.path.join(archive, name) if archive else None
 
     def http_challenge_directory(self, domain_name: str) -> Optional[str]:
         http_challenge_directory = self.directory('http_challenge')
@@ -421,6 +428,20 @@ class Configuration(object):
 
     def list(self, key: str, default=()):
         return get_list(self.settings, key, default)
+
+    def fileowner(self) -> FileOwner:
+        try:
+            selfuid = os.getuid()
+            user = self.get('file_user')
+            uid = pwd.getpwnam(user).pw_uid if user else selfuid
+
+            selfgid = os.getgid()
+            group = self.get('file_group')
+            gid = grp.getgrnam(group).gr_gid if group else selfgid
+
+            return FileOwner(uid, gid, uid == selfuid and gid == selfgid)
+        except Exception as e:
+            raise AcmeError("Failed to determine user and group ID") from e
 
     def hook(self, hook_name: str):
         return self.hooks[hook_name]

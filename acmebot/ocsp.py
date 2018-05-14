@@ -1,6 +1,7 @@
 import logging
 import urllib
 from datetime import datetime
+from urllib import request, parse, error
 
 from asn1crypto import ocsp as asn1_ocsp
 
@@ -39,25 +40,25 @@ def ocsp_response_status(ocsp_response):
 
 
 def fetch_ocsp_response(ocsp_url, ocsp_request, last_update):
-    request = urllib.request.Request(url=ocsp_url, data=ocsp_request.dump())
-    request.add_header('Content-Type', 'application/ocsp-request')
-    request.add_header('Accept', 'application/ocsp-response')
-    request.add_header('Host', urllib.parse.urlparse(ocsp_url).hostname)
+    req = urllib.request.Request(url=ocsp_url, data=ocsp_request.dump())
+    req.add_header('Content-Type', 'application/ocsp-req')
+    req.add_header('Accept', 'application/ocsp-response')
+    req.add_header('Host', urllib.parse.urlparse(ocsp_url).hostname)
     if last_update:
-        request.add_header('If-Modified-Since', last_update.strftime('%a, %d %b %Y %H:%M:%S GMT'))
+        req.add_header('If-Modified-Since', last_update.strftime('%a, %d %b %Y %H:%M:%S GMT'))
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(req) as response:
             # XXX add validation of response
             return asn1_ocsp.OCSPResponse.load(response.read())
-    except urllib.error.HTTPError as error:
-        if last_update and (304 == error.code):
+    except urllib.error.HTTPError as e:
+        if last_update and (304 == e.code):
             return False
-        if (400 <= error.code) and (error.code < 500):
-            logging.warning('Unable to retrieve OCSP response from %s (HTTP error: %s %s):\n%s', ocsp_url, error.code, error.reason, error.read())
+        if (400 <= e.code) and (e.code < 500):
+            logging.warning('Unable to retrieve OCSP response from %s (HTTP error: %s %s):\n%s', ocsp_url, e.code, e.reason, e.read())
         else:
-            logging.warning('Unable to retrieve OCSP response from %s (HTTP error: %s %s)', ocsp_url, error.code, error.reason)
-    except urllib.error.URLError as error:
-        logging.warning('Unable to retrieve OCSP response from %s: %s', ocsp_url, error.reason)
-    except Exception as error:
-        logging.warning('Unable to retrieve OCSP response from %s: %s', ocsp_url, str(error))
+            logging.warning('Unable to retrieve OCSP response from %s (HTTP error: %s %s)', ocsp_url, e.code, e.reason)
+    except urllib.error.URLError as e:
+        logging.warning('Unable to retrieve OCSP response from %s: %s', ocsp_url, e.reason)
+    except Exception as e:
+        logging.warning('Unable to retrieve OCSP response from %s: %s', ocsp_url, str(e))
     return None

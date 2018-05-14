@@ -1,18 +1,17 @@
+import datetime
 import grp
 import logging
 import os
 import pwd
 import shlex
-import socket
 import subprocess
 import tempfile
 from collections import OrderedDict
+from typing import Optional, Tuple, Iterable
 
-import OpenSSL
-from asn1crypto import ocsp as asn1_ocsp
+import collections
 
-from . import AcmeError, log
-from .ocsp import ocsp_response_status
+from . import log
 
 
 class ColorFormatter(logging.Formatter):
@@ -66,17 +65,11 @@ class ColorFormatter(logging.Formatter):
 
 
 def get_user_id(user_name: str) -> int:
-    try:
-        return pwd.getpwnam(user_name).pw_uid
-    except Exception:
-        return -1
+    return pwd.getpwnam(user_name).pw_uid
 
 
 def get_group_id(group_name: str) -> int:
-    try:
-        return grp.getgrnam(group_name).gr_gid
-    except Exception:
-        return -1
+    return grp.getgrnam(group_name).gr_gid
 
 
 def get_device_id(directory: str) -> int:
@@ -117,7 +110,7 @@ def makedir(dir_path: str, chmod: int = None, warn: bool = True):
                 logging.warning('Unable to create directory %s: %s', dir_path, str(error))
 
 
-def open_file(file_path, mode='r', chmod=0o777, warn=True):
+def open_file(file_path, mode='r', chmod=0o640, warn=True):
     def opener(path, flags):
         return os.open(path, flags, mode=chmod)
 
@@ -126,7 +119,10 @@ def open_file(file_path, mode='r', chmod=0o777, warn=True):
     return open(file_path, mode, opener=opener)
 
 
-def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner: str = None, group: str = None, timestamp=None):
+FileOwner = collections.namedtuple('FileOwner', ('uid', 'gid', 'is_self'))
+
+
+def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner: FileOwner = None, timestamp=None):
     if os.path.isfile(old_file_path):
         makedir(os.path.dirname(new_file_path), chmod)
         os.rename(old_file_path, new_file_path)
@@ -140,27 +136,40 @@ def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner
                 os.utime(new_file_path, (timestamp, timestamp))
             except PermissionError as error:
                 logging.warning('Unable to set file time for "%s": %s', new_file_path, str(error))
-        if owner or group:
+        if owner and not owner.is_self:
             try:
-                os.chown(new_file_path, get_user_id(owner), get_group_id(group))
+                os.chown(new_file_path, owner.uid, owner.gid)
             except PermissionError as error:
-                logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner, group, str(error))
+                logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner.uid, owner.gid, str(error))
         return new_file_path
     return None
 
 
+def archive_file(file_type, file_path: str, archive_dir: str, archive_date: datetime.datetime) -> Optional[Tuple[str, str]]:
+    if archive_dir and os.path.isfile(file_path) and (not os.path.islink(file_path)):
+        archive_file_path = os.path.join(archive_dir, archive_date.strftime('%Y_%m_%d_%H%M%S') if archive_date else '',
+                                         file_type + '-' + os.path.basename(file_path))
+        makedir(os.path.dirname(archive_file_path), 0o640)
+        os.rename(file_path, archive_file_path)
+        log.debug('Archived "%s" as "%s"', file_path, archive_file_path)
+        return file_path, archive_file_path
+    return None
+
+
 class FileTransaction(object):
-    __slots__ = ['file', 'temp_file_path', 'file_type', 'file_path', 'chmod', 'timestamp', 'message']
+    __slots__ = ['file', 'temp_file_path', 'file_type', 'file_path', 'chmod', 'owner', 'timestamp', 'message']
     tempdir = None
 
-    def __init__(self, file_type, file_path, chmod=None, timestamp=None, mode='w'):
+    def __init__(self, file_type, file_path, chmod: int = None, owner: FileOwner = None, timestamp: datetime.datetime = None, mode='wb'):
         self.file_type = file_type
         self.file_path = file_path
-        self.chmod = chmod
         self.timestamp = timestamp
-        temp_file_descriptor, self.temp_file_path = tempfile.mkstemp(dir=FileTransaction.tempdir)
-        self.file = open(temp_file_descriptor, mode)
+        self.chmod = chmod
+        self.owner = owner
         self.message = ''
+
+        temp_fd, self.temp_file_path = tempfile.mkstemp(dir=FileTransaction.tempdir, text='b' not in mode)
+        self.file = open(temp_fd, mode)
 
     def __del__(self):
         if self.file:
@@ -170,12 +179,47 @@ class FileTransaction(object):
     def __enter__(self):
         return self
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, ty, value, traceback):
         if self.file:
             self.file.close()
 
     def write(self, data):
         self.file.write(data)
+
+
+def commit_file_transactions(file_transactions: Iterable[FileTransaction], archive_dir: Optional[str] = None):
+    if not file_transactions:
+        return
+
+    log.debug('Committing file transaction')
+    archived_files = []
+    committed_files = []
+    # archive dir is required to commit a transaction safely
+    if archive_dir is None:
+        archive_dir = FileTransaction.tempdir
+    try:
+        archive_date = datetime.datetime.now()
+        for file_transaction in file_transactions:
+            archived_file = archive_file(file_transaction.file_type, file_transaction.file_path, archive_dir, archive_date)
+            if archived_file:
+                archived_files.append(archived_file)
+
+            file = rename_file(file_transaction.temp_file_path, file_transaction.file_path,
+                               chmod=file_transaction.chmod, owner=file_transaction.owner, timestamp=file_transaction.timestamp)
+            if file:
+                committed_files.append(file)
+            log.debug(" - %s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
+    except Exception as error:  # restore any archived files
+        log.error('File transaction error. Rolling back changes')
+        for committed_file_path in committed_files:
+            if committed_file_path:
+                os.remove(committed_file_path)
+                log.debug(' - removing %s', committed_file_path)
+        for original_file_path, archived_file_path in archived_files:
+            if original_file_path:
+                os.rename(archived_file_path, original_file_path)
+                log.debug(' - restoring %s', original_file_path)
+        raise error
 
 
 class Hooks(object):
@@ -222,83 +266,6 @@ class Hooks(object):
 
     def _clear_hooks(self):
         self._hooks.clear()
-
-
-# Verify
-def _send_starttls(ty, sock, host_name):
-    sock.settimeout(30)
-    ty = ty.lower()
-    if 'smtp' == ty:
-        logging.debug('SMTP: %s', sock.recv(4096))
-        sock.send(b'ehlo acmebot.org\r\n')
-        buffer = sock.recv(4096)
-        logging.debug('SMTP: %s', buffer)
-        if b'STARTTLS' not in buffer:
-            sock.shutdown()
-            sock.close()
-            raise AcmeError('STARTTLS not supported on server')
-        sock.send(b'starttls\r\n')
-        logging.debug('SMTP: %s', sock.recv(4096))
-    elif 'pop3' == ty:
-        logging.debug('POP3: %s', sock.recv(4096))
-        sock.send(b'STLS\r\n')
-        logging.debug('POP3: %s', sock.recv(4096))
-    elif 'imap' == ty:
-        logging.debug('IMAP: %s', sock.recv(4096))
-        sock.send(b'a001 STARTTLS\r\n')
-        logging.debug('IMAP: %s', sock.recv(4096))
-    elif 'ftp' == ty:
-        logging.debug('FTP: %s', sock.recv(4096))
-        sock.send(b'AUTH TLS\r\n')
-        logging.debug('FTP: %s', sock.recv(4096))
-    elif 'xmpp' == ty:
-        sock.send('<stream:stream xmlns:stream="http://etherx.jabber.org/streams" '
-                  'xmlns="jabber:client" to="{host}" version="1.0">\n'.format(host=host_name).encode('ascii'))
-        logging.debug('XMPP: %s', sock.recv(4096), '\n')
-        sock.send(b'<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>')
-        logging.debug('XMPP: %s', sock.recv(4096), '\n')
-    elif 'sieve' == ty:
-        buffer = sock.recv(4096)
-        logging.debug('SIEVE: %s', buffer)
-        if b'"STARTTLS"' not in buffer:
-            sock.shutdown()
-            sock.close()
-            raise AcmeError('STARTTLS not supported on server')
-        sock.send(b'StartTls\r\n')
-        logging.debug('SIEVE: %s', sock.recv(4096))
-    else:
-        sock.shutdown()
-        sock.close()
-        raise Exception('Unsuppoprted STARTTLS type: ' + ty)
-    sock.settimeout(None)
-
-
-def fetch_tls_info(addr, ssl_context, key_type, host_name, starttls):
-    sock = socket.socket(addr[0], socket.SOCK_STREAM)
-    sock.connect(addr[4])
-
-    if starttls:
-        _send_starttls(starttls, sock, host_name)
-
-    def _process_ocsp(conn, ocsp_data, data):
-        conn.get_app_data()['ocsp'] = asn1_ocsp.OCSPResponse.load(ocsp_data) if (b'' != ocsp_data) else None
-        return True
-
-    app_data = {'has_ocsp': False}
-    ssl_context.set_ocsp_client_callback(_process_ocsp)
-    ssl_sock = OpenSSL.SSL.Connection(ssl_context, sock)
-    ssl_sock.set_app_data(app_data)
-    ssl_sock.set_connect_state()
-    ssl_sock.set_tlsext_host_name(host_name.encode('ascii'))
-    ssl_sock.request_ocsp()
-    ssl_sock.do_handshake()
-    logging.debug('Connected to %s, protocol %s, cipher %s, OCSP Staple %s', ssl_sock.get_servername(), ssl_sock.get_protocol_version_name(),
-                  ssl_sock.get_cipher_name(), ocsp_response_status(app_data['ocsp']).upper() if (app_data['ocsp']) else 'missing')
-    installed_certificates = ssl_sock.get_peer_cert_chain()
-
-    ssl_sock.shutdown()
-    ssl_sock.close()
-    return installed_certificates, app_data['ocsp']
 
 
 def process_running(pid_file_path):

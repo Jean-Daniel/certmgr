@@ -22,7 +22,7 @@ AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', '
 
 
 def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_client: client.ClientV2,
-                          fetch_only: bool, retry: int, delay: int) -> List[messages.AuthorizationResource]:
+                          retry: int, delay: int) -> List[messages.AuthorizationResource]:
     authorizations = []
     authorization_resources = {}
 
@@ -33,11 +33,8 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
             log.debug('%s already authorized', domain_name)
             authorizations.append(authorization_resource)
         elif messages.STATUS_PENDING == authorization_resource.body.status:
-            if not fetch_only:
-                log.info('Requesting authorization for %s', domain_name)
-                authorization_resources[domain_name] = authorization_resource
-            else:
-                raise AcmeError('{} not authorized', domain_name)
+            log.info('Requesting authorization for %s', domain_name)
+            authorization_resources[domain_name] = authorization_resource
         else:
             raise AcmeError('Unexpected status "{}" for authorization of {}', authorization_resource.body.status, domain_name)
 
