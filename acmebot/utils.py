@@ -2,13 +2,16 @@ import grp
 import logging
 import os
 import pwd
+import shlex
 import socket
+import subprocess
 import tempfile
+from collections import OrderedDict
 
 import OpenSSL
 from asn1crypto import ocsp as asn1_ocsp
 
-from . import AcmeError
+from . import AcmeError, log
 from .ocsp import ocsp_response_status
 
 
@@ -137,16 +140,17 @@ def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner
                 os.utime(new_file_path, (timestamp, timestamp))
             except PermissionError as error:
                 logging.warning('Unable to set file time for "%s": %s', new_file_path, str(error))
-        try:
-            os.chown(new_file_path, get_user_id(owner), get_group_id(group))
-        except PermissionError as error:
-            logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner, group, str(error))
+        if owner or group:
+            try:
+                os.chown(new_file_path, get_user_id(owner), get_group_id(group))
+            except PermissionError as error:
+                logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner, group, str(error))
         return new_file_path
     return None
 
 
 class FileTransaction(object):
-    __slots__ = ['file', 'temp_file_path', 'file_type', 'file_path', 'chmod', 'timestamp']
+    __slots__ = ['file', 'temp_file_path', 'file_type', 'file_path', 'chmod', 'timestamp', 'message']
     tempdir = None
 
     def __init__(self, file_type, file_path, chmod=None, timestamp=None, mode='w'):
@@ -156,6 +160,7 @@ class FileTransaction(object):
         self.timestamp = timestamp
         temp_file_descriptor, self.temp_file_path = tempfile.mkstemp(dir=FileTransaction.tempdir)
         self.file = open(temp_file_descriptor, mode)
+        self.message = ''
 
     def __del__(self):
         if self.file:
@@ -171,6 +176,52 @@ class FileTransaction(object):
 
     def write(self, data):
         self.file.write(data)
+
+
+class Hooks(object):
+
+    def __init__(self):
+        self._hooks = OrderedDict()
+
+    # Hook Management
+    def add(self, hook_name: str, hooks, **kwargs):
+        if not hooks:
+            return
+
+        if hook_name not in self._hooks:
+            self._hooks[hook_name] = []
+
+        # Hook take an array of commands, or a single command
+        if isinstance(hooks, (str, dict)):
+            hooks = (hooks,)
+        try:
+            for hook in hooks:
+                if isinstance(hook, str):
+                    hook = {
+                        'args': shlex.split(hook)
+                    }
+                else:
+                    hook = hook.copy()
+                hook['args'] = [arg.format(**kwargs) for arg in hook['args']]
+                self._hooks[hook_name].append(hook)
+        except KeyError as error:
+            log.warning('Invalid hook specification for %s, unknown key %s', hook_name, error)
+
+    def call(self):
+        for hook_name, hooks in self._hooks.items():
+            for hook in hooks:
+                try:
+                    log.info('Calling hook %s: %s', hook_name, hook['args'])
+                    # TODO: add support for cwd, env, …
+                    log.info(subprocess.check_output(hook['args'], stderr=subprocess.STDOUT, shell=False))
+                except subprocess.CalledProcessError as error:
+                    log.warning('Hook %s returned error, code: %s:\n%s', hook_name, error.returncode, error.output)
+                except Exception as e:
+                    log.warning('Failed to call hook %s (%s): %s', hook_name, hook['args'], str(e))
+        self._clear_hooks()
+
+    def _clear_hooks(self):
+        self._hooks.clear()
 
 
 # Verify

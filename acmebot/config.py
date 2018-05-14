@@ -1,13 +1,14 @@
 import json
+import logging
 import os
 import tempfile
 from collections import OrderedDict
-from typing import Iterable, Optional, Dict, List, Tuple, Union
+from typing import Iterable, Optional, Dict, Union, Tuple
 
 import collections
 
-from . import AcmeError, log
-from .utils import FileTransaction, get_device_id, host_in_list
+from . import AcmeError, log, SUPPORTED_KEY_TYPES
+from .utils import FileTransaction, get_device_id, host_in_list, makedir
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
@@ -36,11 +37,15 @@ def _get_domain_names(zone_name: str, host_names):
     return domain_names
 
 
+def _check(section: str, dest: dict, values: dict):
+    for key, value in values.items():
+        if key not in dest:
+            log.warning("[config] unsupported key '%s' in section '%s'", key, section)
+
+
 def _merge(section: str, dest: dict, values: dict, check: bool = True):
     if check:
-        for key, value in values.items():
-            if key not in dest:
-                log.warning("[config] unsupported key '%s' in section '%s'", key, section)
+        _check(section, dest, values)
     dest.update(values)
 
 
@@ -118,7 +123,7 @@ class CertificateSpec(object):
 
         self.key_types = spec.get('key_types', self.private_key.types)
         for kt in self.key_types:
-            if kt not in ('rsa', 'ecdsa'):
+            if kt not in SUPPORTED_KEY_TYPES:
                 raise AcmeError('[config] certificate {} requests unsupported key type "{}"', name, kt)
             if kt not in self.private_key.types:
                 raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', name, kt)
@@ -135,10 +140,105 @@ class CertificateSpec(object):
         self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
 
 
+class FileManager(object):
+    DEFAULT_DIRECTORIES = {
+        'pid': '/var/run',
+        'log': '/var/log/acmebot',
+        'symlinks': None,
+        'resource': '/var/local/acmebot',
+        'private_key': '/etc/ssl/private',
+        'full_key': '/etc/ssl/private',
+        'certificate': '/etc/ssl/certs',
+        'full_certificate': '/etc/ssl/certs',
+        'chain': '/etc/ssl/certs',
+        'param': '/etc/ssl/params',
+        'http_challenge': None,
+        'ocsp': '/etc/ssl/ocsp/',
+        'sct': '/etc/ssl/scts/{name}/{key_type}',
+        'archive': '/etc/ssl/archive',
+        'temp': None
+    }
+
+    DEFAULT_FILENAMES = {
+        'log': 'acmebot.log',
+        'private_key': '{name}{suffix}.key',
+        'full_key': '{name}_full{suffix}.key',
+        'certificate': '{name}{suffix}.pem',
+        'full_certificate': '{name}+root{suffix}.pem',
+        'chain': '{name}_chain{suffix}.pem',
+        'param': '{name}_param.pem',
+        'ocsp': '{name}{suffix}.ocsp',
+        'sct': '{ct_log_name}.sct'
+    }
+
+    def __init__(self, base: str, directories, filenames):
+        for key, dirpath in directories.items():
+            if not dirpath:
+                continue
+            if not os.path.isabs(dirpath):
+                dirpath = os.path.join(base, dirpath)
+            directories[key] = os.path.realpath(dirpath)
+
+        temp_dir = directories.get('temp') or tempfile.gettempdir()
+        os.makedirs(temp_dir, mode=700, exist_ok=True)
+        assert os.path.exists(temp_dir)
+
+        # FIXME: properly support multi devices file transactions
+        temp_device = get_device_id(temp_dir)
+        safedirs = {'pid', 'log', 'symlinks', 'temp'}
+        for dirname, dirpath in directories.items():
+            if not dirpath or dirname in safedirs:
+                continue
+            if get_device_id(dirpath) != temp_device:
+                raise AcmeError('[config] Temp directory must be on same device as "{}" directory', dirname)
+        FileTransaction.tempdir = temp_dir
+
+        self._directories = directories
+        self._filenames = filenames
+
+    def filename(self, file_type: str) -> Optional[str]:
+        return self._filenames.get(file_type)
+
+    def filepath(self, file_type, file_name, key_type=None, **kwargs) -> str:
+        if self.directory(file_type) is not None:
+            directory = self.directory(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
+            file_name = self.filename(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
+            return os.path.join(directory, file_name.replace('*', '_'))
+        return ''
+
+    def directory(self, file_type: str) -> Optional[str]:
+        return self._directories[file_type]
+
+    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
+        http_challenge_directory = self.directory('http_challenge')
+        if http_challenge_directory and '{' in http_challenge_directory:
+            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
+        return http_challenge_directory
+
+
+def configure_logger(level: Optional[str], fs: FileManager):
+    if level is not None:
+        levels = {
+            "normal": logging.WARNING,
+            "verbose": logging.INFO,
+            "debug": logging.DEBUG,
+            "detail": logging.DEBUG,
+        }
+        if level not in levels:
+            log.warning("[config] unsupported log level: %s", level)
+            level = "normal"
+            log.setLevel(levels[level])
+        # if level is None, don't create log file
+        if fs.directory('log') and fs.filename('log'):
+            makedir(fs.directory('log'), 0o700)
+            log_file_path = fs.filepath('log', 'acmebot')
+            log.addHandler(logging.FileHandler(log_file_path, encoding='UTF-8'))
+
+
 class Configuration(object):
 
     @classmethod
-    def load(cls, file_path: str, search_paths: Iterable[str] = ()) -> 'Configuration':
+    def load(cls, file_path: str, search_paths: Iterable[str] = ()) -> Tuple['Configuration', FileManager]:
         search_paths = ('',) if (os.path.isabs(file_path)) else search_paths
         for search_path in search_paths:
             config_file_path = os.path.join(search_path, file_path)
@@ -152,44 +252,63 @@ class Configuration(object):
         raise AcmeError('[config] Config file "{}" not found', file_path)
 
     @classmethod
-    def _load(cls, file_path: str) -> 'Configuration':
+    def _load(cls, file_path: str) -> Tuple['Configuration', FileManager]:
         cfg = cls(file_path)
         with open(cfg.path, 'rt', encoding='utf-8') as config_file:
             data = json.load(config_file, object_pairs_hook=collections.OrderedDict)
+
+            # configure log first, so configuration loading errors are properly logged.
+            values = data.get('settings')
+            if values:
+                level = values.get('log_level', cfg.get('log_level'))
+            else:
+                level = cfg.get('log_level')
+
+            directories = FileManager.DEFAULT_DIRECTORIES
+            values = data.get('directories')
+            if values:
+                # check later when logger ready
+                _merge('directories', directories, values, check=False)
+
+            filenames = FileManager.DEFAULT_FILENAMES
+            values = data.get('file_names')
+            if values:
+                # check later when logger ready
+                _merge('file_names', filenames, values, check=False)
+
+            filemgr = FileManager(os.path.dirname(cfg.path), directories, filenames)
+            configure_logger(level, filemgr)
+
             for section, values in data.items():
                 # TODO: http_challenges
                 if section == 'account':
                     _merge('account', cfg.account, values)
                 elif section == 'settings':
-                    if ('slave_mode' in values) and ('follower_mode' not in values):
-                        values['follower_mode'] = values['slave_mode']
-                        del values['slave_mode']
                     _merge('settings', cfg.settings, values)
                 elif section == 'directories':
-                    _merge('directories', cfg.directories, values)
-                    cfg._validate_directories()
+                    # for logging purpose only
+                    _check('directories', FileManager.DEFAULT_DIRECTORIES, values)
                 elif section == 'file_names':
-                    _merge('file_names', cfg.file_names, values)
+                    # for logging purpose only
+                    _check('file_names', FileManager.DEFAULT_FILENAMES, values)
                 elif section == 'hooks':
                     _merge('hooks', cfg.hooks, values)
                 elif section == 'services':
-                    _merge('services', cfg.file_names, values, check=False)
+                    _merge('services', cfg.services, values, check=False)
                 elif section == 'ct_logs':
                     _merge('ct_logs', cfg.ct_logs, values, check=False)
                 elif section == 'certificates':
                     cfg._parse_certificates(values)
-                elif section == 'authorizations':
-                    cfg._parse_authorizations(values)
                 else:
                     log.warning('[config] unknown section name: "%s"', section)
 
-        return cfg
+        return cfg, filemgr
 
     def __init__(self, path: str):
         self.path = os.path.realpath(path)
         self.account = {'email': None}
         self.settings = {
-            'follower_mode': False,
+            'mode': None,
             'log_level': 'debug',
             'color_output': True,
             'key_size': 4096,
@@ -198,13 +317,12 @@ class Configuration(object):
             'key_passphrase': None,
             'dhparam_size': 2048,
             'ecparam_curve': 'secp384r1',
-            'file_user': 'root',
-            'file_group': 'ssl-cert',
+            'file_user': None,
+            'file_group': None,
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
             'renewal_days': 30,
-            'max_domains_per_order': 100,
             'max_authorization_attempts': 30,
             'authorization_delay': 10,
             'cert_poll_time': 30,
@@ -215,34 +333,7 @@ class Configuration(object):
             'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
             'verify': None
         }
-        self.directories = {
-            'pid': '/var/run',
-            'log': '/var/log/acmebot',
-            'symlinks': None,
-            'resource': '/var/local/acmebot',
-            'private_key': '/etc/ssl/private',
-            'full_key': '/etc/ssl/private',
-            'certificate': '/etc/ssl/certs',
-            'full_certificate': '/etc/ssl/certs',
-            'chain': '/etc/ssl/certs',
-            'param': '/etc/ssl/params',
-            'http_challenge': None,
-            'ocsp': '/etc/ssl/ocsp/',
-            'sct': '/etc/ssl/scts/{name}/{key_type}',
-            'archive': '/etc/ssl/archive',
-            'temp': None
-        }
-        self.file_names = {
-            'log': 'acmebot.log',
-            'private_key': '{name}{suffix}.key',
-            'full_key': '{name}_full{suffix}.key',
-            'certificate': '{name}{suffix}.pem',
-            'full_certificate': '{name}+root{suffix}.pem',
-            'chain': '{name}_chain{suffix}.pem',
-            'param': '{name}_param.pem',
-            'ocsp': '{name}{suffix}.ocsp',
-            'sct': '{ct_log_name}.sct'
-        }
+
         self.hooks = {
             'set_http_challenge': None,
             'clear_http_challenge': None,
@@ -317,7 +408,6 @@ class Configuration(object):
                 'id': '23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q='
             }
         }
-        self.authorizations = {}
         self.certificates = OrderedDict()  # type: Dict[str, CertificateSpec]
 
     def get(self, item: str, default=None):
@@ -331,25 +421,6 @@ class Configuration(object):
 
     def list(self, key: str, default=()):
         return get_list(self.settings, key, default)
-
-    def filename(self, file_type: str) -> Optional[str]:
-        return self.file_names.get(file_type)
-
-    def filepath(self, file_type, file_name, key_type=None, **kwargs) -> str:
-        if self.directory(file_type) is not None:
-            directory = self.directory(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
-            file_name = self.filename(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
-            return os.path.join(directory, file_name.replace('*', '_'))
-        return ''
-
-    def directory(self, file_type: str) -> Optional[str]:
-        return self.directories[file_type]
-
-    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
-        http_challenge_directory = self.directory('http_challenge')
-        if http_challenge_directory and '{' in http_challenge_directory:
-            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
-        return http_challenge_directory
 
     def hook(self, hook_name: str):
         return self.hooks[hook_name]
@@ -366,7 +437,7 @@ class Configuration(object):
             cert = CertificateSpec(certificate_name, certificate_spec, self.settings)
             for host_name in cert.alt_names:
                 if host_name in host_names:
-                    raise AcmeError("[config] {} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
+                    log.info("[config] {} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
                 host_names.add(host_name)
 
             for v in cert.verify:
@@ -375,30 +446,3 @@ class Configuration(object):
                         raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
 
             self.certificates[certificate_name] = cert
-
-    def _validate_directories(self):
-        base = os.path.dirname(self.path)
-        for key, dirpath in self.directories.items():
-            if not dirpath:
-                continue
-            if not os.path.isabs(dirpath):
-                dirpath = os.path.join(base, dirpath)
-            self.directories[key] = os.path.realpath(dirpath)
-
-        temp_dir = self.directories.get('temp') or tempfile.gettempdir()
-        os.makedirs(temp_dir, mode=700, exist_ok=True)
-        assert os.path.exists(temp_dir)
-
-        # FIXME: properly support multi devices file transactions
-        temp_device = get_device_id(temp_dir)
-        safedirs = {'pid', 'log', 'symlinks', 'temp'}
-        for dirname, dirpath in self.directories.items():
-            if not dirpath or dirname in safedirs:
-                continue
-            if get_device_id(dirpath) != temp_device:
-                raise AcmeError('[config] Temp directory must be on same device as "{}" directory', dirname)
-        FileTransaction.tempdir = temp_dir
-
-    def _parse_authorizations(self, values):
-        for zone, names in values.items():
-            self.authorizations[zone] = _get_domain_names(zone, names)

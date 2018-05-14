@@ -18,7 +18,6 @@
         "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
         "ct_submit_logs": ["google_icarus", "google_pilot"],
         "renewal_days": 30,
-        "max_domains_per_order": 100,
         "max_authorization_attempts": 30,
         "authorization_delay": 10,
         "cert_poll_time": 30,

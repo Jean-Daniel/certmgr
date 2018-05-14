@@ -1,252 +1,314 @@
+import abc
 import hashlib
 import logging
 import re
 import subprocess
+import urllib
 from datetime import datetime
-from typing import Union
+from io import BytesIO
+from typing import Union, Optional, List, Tuple, Iterable, Callable
 
-import OpenSSL
-from OpenSSL.crypto import X509, PKey
+from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
 
+from acmebot import AcmeError
 
-def generate_rsa_key(key_size: int):
-    key = OpenSSL.crypto.PKey()
-    key.generate_key(OpenSSL.crypto.TYPE_RSA, key_size)
-    return key
-
-
-def generate_ecdsa_key(key_curve: str):
-    key_curve = key_curve.lower()
-    if 'secp256r1' == key_curve:
-        key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-    elif 'secp384r1' == key_curve:
-        key = ec.generate_private_key(ec.SECP384R1(), default_backend())
-    elif 'secp521r1' == key_curve:
-        key = ec.generate_private_key(ec.SECP521R1(), default_backend())
-    else:
-        logging.warning('Unsupported key curve: %s', key_curve)
-        return None
-    #        return OpenSSL.crypto.PKey.from_cryptography_key(key)  # currently not supported
-    key_pem = key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
-    return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, key_pem)
+# FIXME: should be dynamic ?
+_SUPPORTED_CURVES = {
+    'secp256r1': ec.SECP256R1(),
+    'secp384r1': ec.SECP384R1(),
+    'secp521r1': ec.SECP521R1(),
+}
 
 
-def generate_csr(private_key, common_name, alt_names=(), must_staple=False):
-    req = OpenSSL.crypto.X509Req()
-    req.get_subject().CN = common_name
-    extensions = [
-        OpenSSL.crypto.X509Extension(
-            b'subjectAltName',
-            critical=False,
-            value=', '.join('DNS:%s' % domain_name for domain_name in alt_names).encode('ascii')
-        )
-    ]
-    if must_staple:
-        extensions.append(ocsp_must_staple_extension())
-    req.add_extensions(extensions)
-    req.set_version(2)
-    req.set_pubkey(private_key)
-    req.sign(private_key, 'sha256')
-    return OpenSSL.crypto.dump_certificate_request(OpenSSL.crypto.FILETYPE_PEM, req)
+class PrivateKey(metaclass=abc.ABCMeta):
+
+    def __init__(self, key: Union[rsa.RSAPrivateKeyWithSerialization, ec.EllipticCurvePrivateKeyWithSerialization]):
+        self._key = key
+
+    @property
+    @abc.abstractmethod
+    def key_type(self) -> str:
+        raise NotImplementedError()
+
+    @property
+    @abc.abstractmethod
+    def params(self) -> Union[int, str]:
+        raise NotImplementedError()
+
+    def public_key_bytes(self) -> bytes:
+        return self._key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+    def public_key_digest(self, digest='sha256'):
+        return hashlib.new(digest, self.public_key_bytes()).digest()
+
+    def match_certificate(self, certificate: 'Certificate'):
+        return self.public_key_bytes() == certificate.public_key_bytes()
+
+    #    def encode(self):
+    #        return self._key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
+
+    def create_csr(self, common_name: str, alt_names: Iterable[str] = (), must_staple=False) -> x509.CertificateSigningRequest:
+        subject = [
+            # TODO: try to set other fields
+            x509.NameAttribute(x509.NameOID.COMMON_NAME, common_name)
+        ]
+        req = x509.CertificateSigningRequestBuilder(x509.Name(subject))
+        req = req.add_extension(x509.SubjectAlternativeName(general_names=(x509.DNSName(name) for name in alt_names)), critical=True)
+
+        if must_staple:
+            req = req.add_extension(x509.TLSFeature([x509.TLSFeatureType.status_request]), critical=False)
+        return req.sign(self._key, hashes.SHA256(), default_backend())
+
+    @staticmethod
+    def create(key_type: str, params: Union[int, str]) -> 'PrivateKey':
+        if 'rsa' == key_type:
+            assert isinstance(params, int)
+            return _RSAKey(rsa.generate_private_key(65537, params, default_backend()))
+        if 'ecdsa' == key_type:
+            assert isinstance(params, str)
+            curve = _SUPPORTED_CURVES.get(params)
+            if not curve:
+                raise NotImplementedError('Unsupported key curve: ' + params)
+
+            return _ECDSAKey(ec.generate_private_key(curve, default_backend()))
+        raise NotImplementedError('Unsupported key type ' + key_type.upper())
+
+    @staticmethod
+    def load(key_file: str, password: Union[str, bytes, Callable] = None) -> Optional['PrivateKey']:
+        try:
+            with open(key_file, 'rb') as f:
+                key_pem = f.read()
+            pwd = None
+            if b'-----BEGIN ENCRYPTED PRIVATE KEY-----' in key_pem:
+                pwd = password() if callable(password) else password
+                if isinstance(pwd, str):
+                    pwd = pwd.encode('utf-8')
+
+            key = serialization.load_pem_private_key(key_pem, pwd, default_backend())
+            if isinstance(key, rsa.RSAPrivateKey):
+                assert isinstance(key, rsa.RSAPrivateKeyWithSerialization)
+                return _RSAKey(key)
+            if isinstance(key, ec.EllipticCurvePrivateKey):
+                assert isinstance(key, ec.EllipticCurvePrivateKeyWithSerialization)
+                return _ECDSAKey(key)
+            raise NotImplementedError("Unsupported key type: " + key.__class__)
+        except FileNotFoundError:
+            return None
 
 
-def generate_private_key(key_type: str, options: Union[int, str]):
-    if 'rsa' == key_type:
-        return generate_rsa_key(options)
-    if 'ecdsa' == key_type:
-        return generate_ecdsa_key(options)
-    logging.warning('Unknown key type %s', key_type.upper())
-    return None
+class _RSAKey(PrivateKey):
+
+    @property
+    def key_type(self) -> str:
+        return 'rsa'
+
+    @property
+    def params(self) -> int:
+        return self._key.key_size
+
+    def __str__(self):
+        return '{key_size} bits'.format(key_size=self.params)
 
 
-def private_key_matches_options(key_type, private_key, options: Union[str, int]):
-    if 'rsa' == key_type:
-        return private_key.bits() == options
-    if 'ecdsa' == key_type:
-        return private_key.to_cryptography_key().curve.name == options
-    logging.warning('Unknown key type %s', key_type.upper())
-    return False
+class _ECDSAKey(PrivateKey):
+
+    @property
+    def key_type(self) -> str:
+        return 'ecdsa'
+
+    @property
+    def params(self) -> str:
+        return self._key.curve
+
+    def __str__(self):
+        return 'curve {key_curve}'.format(key_curve=self.params)
 
 
-def private_key_descripton(key_type, options: Union[str, int]):
-    if 'rsa' == key_type:
-        return '{key_size} bits'.format(key_size=options)
-    if 'ecdsa' == key_type:
-        return 'curve {key_curve}'.format(key_curve=options)
-    logging.warning('Unknown key type %s', key_type.upper())
-    return ''
+# -------- Certificates
+class Certificate(object):
 
+    def __init__(self, cert: x509.Certificate):
+        self._cert = cert
 
-def public_key_bytes(private_key: PKey):
-    if private_key:
-        return private_key.to_cryptography_key().public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-    return None
+    def __eq__(self, other):
+        if not isinstance(other, Certificate):
+            return False
 
-
-def private_key_export(private_key: RSAPrivateKey):
-    return private_key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
-
-
-def certificate_public_key_bytes(certificate):
-    if certificate:
-        return certificate.get_pubkey().to_cryptography_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-    return None
-
-
-def public_key_digest(private_key, digest='sha256'):
-    if 'sha256' == digest:
-        return hashlib.sha256(public_key_bytes(private_key)).digest()
-    return hashlib.sha512(public_key_bytes(private_key)).digest()
-
-
-def certificate_bytes(certificate):
-    if certificate:
-        return OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_ASN1, certificate)
-    return None
-
-
-def ocsp_must_staple_extension():
-    return OpenSSL.crypto.X509Extension(b'1.3.6.1.5.5.7.1.24', critical=False, value=b'DER:30:03:02:01:05')
-
-
-def get_alt_names(certificate: X509):
-    for index in range(certificate.get_extension_count()):
-        extension = certificate.get_extension(index)
-        if b'subjectAltName' == extension.get_short_name():
-            return [alt_name.split(':')[1] for alt_name in str(extension).split(', ')]
-    return []
-
-
-def has_oscp_must_staple(certificate: X509):
-    ocsp_must_staple = ocsp_must_staple_extension()
-    for index in range(certificate.get_extension_count()):
-        extension = certificate.get_extension(index)
-        if ((ocsp_must_staple.get_short_name() == extension.get_short_name())
-                and (ocsp_must_staple.get_data() == extension.get_data())):
+        if self is other or self._cert is other._cert:
             return True
-    return False
+
+        return self._cert == other._cert
+
+    def encode(self) -> bytes:
+        return self._cert.public_bytes(serialization.Encoding.PEM)
+
+    # to test if certificate and private key match
+    def public_key_bytes(self):
+        return self._cert.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+    @property
+    def not_before(self) -> datetime:
+        return self._cert.not_valid_before
+
+    @property
+    def not_after(self) -> datetime:
+        return self._cert.not_valid_after
+
+    @property
+    def common_name(self) -> str:
+        return self._cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0]
+
+    @property
+    def alt_names(self) -> Iterable[str]:
+        ext = self._cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        if ext:
+            return [v.value.decode('ascii') for v in ext.get_values_for_type(x509.DNSName)]
+        return []
+
+    @property
+    def has_oscp_must_staple(self) -> bool:
+        ext = self._cert.extensions.get_extension_for_class(x509.TLSFeature)
+        if ext:
+            for feature in ext:
+                if feature == x509.TLSFeatureType.status_request:
+                    return True
+        return False
+
+    # def digest(self, digest='sha256') -> str:
+    #    return self._cert.digest(digest).decode('ascii').replace(':', '').lower()
+
+    @staticmethod
+    def load(cert_file: str) -> Optional['Certificate']:
+        try:
+            with open(cert_file, 'rb') as f:
+                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+            return Certificate(cert)
+        except FileNotFoundError:
+            return None
+
+    def dump(self, stream: BytesIO, chain: 'CertificateChain' = None, root_certificate: 'Certificate' = None, dhparam_pem: bytes = None, ecparam_pem: bytes = None):
+        # Header
+        stream.write(self.common_name.encode("utf-8"))
+        stream.write(b' issued at ')
+        stream.write(self.not_before.strftime('%Y-%m-%d %H:%M:%S UTC').encode("utf-8"))
+        stream.write(b'\n')
+
+        stream.write(self.encode())
+
+        if chain:
+            save_chain(stream, chain, b'\n')
+
+        if root_certificate:
+            stream.write(b'\n')
+            stream.write(root_certificate.common_name.encode("utf-8"))
+            stream.write(b'\n')
+            stream.write(root_certificate.encode())
+
+        if dhparam_pem:
+            stream.write(b'\n')
+            stream.write(dhparam_pem)
+
+        if ecparam_pem:
+            stream.write(b'\n')
+            stream.write(ecparam_pem)
 
 
-def private_key_matches_certificate(private_key, certificate: X509):
-    return public_key_bytes(private_key) == certificate_public_key_bytes(certificate)
+CertificateChain = List[Certificate]
 
 
-def certificate_digest(certificate, digest='sha256'):
-    return certificate.digest(digest).decode('ascii').replace(':', '').lower()
-
-
-def certificates_match(certificate1, certificate2):
-    return (OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate1) ==
-            OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate2))
-
-
-def datetime_from_asn1_generaltime(general_time):
-    try:
-        return datetime.strptime(general_time.decode('ascii'), '%Y%m%d%H%M%SZ')
-    except ValueError:
-        return datetime.strptime(general_time.decode('ascii'), '%Y%m%d%H%M%S%z')
-
-
-def save_chain(chain_file, chain, lead_in=''):
-    for chain_certificate in chain:
-        chain_certificate_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, chain_certificate).decode('ascii')
-        chain_file.write(lead_in + chain_certificate.get_subject().commonName + '\n')
-        chain_file.write(chain_certificate_pem)
-        lead_in = '\n'
-
-
-def save_certificate(certificate_file, certificate, chain=None, root_certificate=None, dhparam_pem=None, ecparam_pem=None):
-    certificate_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate).decode('ascii')
-    certificate_not_before = datetime_from_asn1_generaltime(certificate.get_notBefore())
-    certificate_file.write(certificate.get_subject().commonName + ' issued at ' + certificate_not_before.strftime('%Y-%m-%d %H:%M:%S UTC') + '\n')
-    certificate_file.write(certificate_pem)
-
-    if chain:
-        save_chain(certificate_file, chain, '\n')
-
-    if root_certificate:
-        root_certificate_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, root_certificate).decode('ascii')
-        certificate_file.write('\n' + root_certificate.get_subject().commonName + '\n')
-        certificate_file.write(root_certificate_pem)
-
-    if dhparam_pem:
-        certificate_file.write('\n' + dhparam_pem)
-    if ecparam_pem:
-        certificate_file.write('\n' + ecparam_pem)
-
-
-def decode_full_chain(full_chain_pem):
-    full_chain = []
-    certificate_pems = re.findall('-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', full_chain_pem, re.DOTALL)
+def load_chain(chain_pem: bytes) -> Optional[CertificateChain]:
+    chain = []
+    certificate_pems = re.findall(b'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', chain_pem, re.DOTALL)
     for certificate_pem in certificate_pems:
-        full_chain.append(OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate_pem.encode('ascii')))
+        chain.append(Certificate(x509.load_pem_x509_certificate(certificate_pem, default_backend())))
+    return chain
+
+
+def load_chain_file(chain_file: str) -> Optional[CertificateChain]:
+    with open(chain_file, 'rb') as f:
+        chain_pem = f.read()
+    return load_chain(chain_pem)
+
+
+def load_full_chain(chain_pem: bytes) -> Optional[Tuple[Certificate, CertificateChain]]:
+    full_chain = load_chain(chain_pem)
+    if not full_chain:
+        return None
+    if len(full_chain) < 2:
+        raise AcmeError("full chain must contains at least 2 certificates")
     return full_chain[0], full_chain[1:]
 
 
+def save_chain(chain_file: BytesIO, chain: CertificateChain, lead_in=b''):
+    for chain_certificate in chain:
+        chain_file.write(lead_in)
+        chain_file.write(chain_certificate.common_name.encode("utf-8"))
+        chain_file.write(b'\n')
+        chain_file.write(chain_certificate.encode())
+        lead_in = b'\n'
+
+
 # ----- Params
-def generate_dhparam(dhparam_size):
-    if dhparam_size:
-        try:
-            return subprocess.check_output(['openssl', 'dhparam', str(dhparam_size)], stderr=subprocess.DEVNULL).decode('ascii')
-        except Exception as e:
-            logging.error("dhparam generation failed: %s", str(e))
-    return None
+def generate_dhparam(dhparam_size: int) -> bytes:
+    assert dhparam_size > 0
+    return subprocess.check_output(['openssl', 'dhparam', str(dhparam_size)], stderr=subprocess.DEVNULL)
 
 
-def generate_ecparam(ecparam_curve):
-    if ecparam_curve:
-        try:
-            return subprocess.check_output(['openssl', 'ecparam', '-name', ecparam_curve], stderr=subprocess.DEVNULL).decode('ascii')
-        except Exception as e:
-            logging.error("ecparam generation failed: %s", str(e))
-    return None
+def generate_ecparam(ecparam_curve: str) -> bytes:
+    assert ecparam_curve
+    return subprocess.check_output(['openssl', 'ecparam', '-name', ecparam_curve], stderr=subprocess.DEVNULL)
 
 
-def check_dhparam(dhparam_pem):
-    if dhparam_pem:
-        try:
-            openssl = subprocess.Popen(['openssl', 'dhparam', '-check'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            openssl.communicate(input=dhparam_pem.encode('ascii'))
-            return 0 == openssl.returncode
-        except Exception as e:
-            logging.error("dhparam check failed: %s", str(e))
-    return False
+def check_dhparam(dhparam_pem: bytes) -> bool:
+    assert dhparam_pem
+    openssl = subprocess.run(['openssl', 'dhparam', '-check'], input=dhparam_pem, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0 == openssl.returncode
 
 
-def check_ecparam(ecparam_pem):
-    if ecparam_pem:
-        try:
-            openssl = subprocess.Popen(['openssl', 'ecparam', '-check'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            openssl.communicate(input=ecparam_pem.encode('ascii'))
-            return 0 == openssl.returncode
-        except Exception as e:
-            logging.error("ecparam check failed: %s", str(e))
-    return False
+def check_ecparam(ecparam_pem: bytes) -> bool:
+    assert ecparam_pem
+    openssl = subprocess.run(['openssl', 'ecparam', '-check'], input=ecparam_pem, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0 == openssl.returncode
 
 
-def get_dhparam_size(dhparam_pem):
-    if dhparam_pem:
-        try:
-            output = subprocess.check_output(['openssl', 'dhparam', '-text'], input=dhparam_pem.encode('ascii'), stderr=subprocess.DEVNULL)
-            match = re.match(r'\s*(?:PKCS#3)?\s*DH Parameters: \(([0-9]+) bit\)\n', output.decode('ascii'))
-            if match:
-                return int(match.group(1))
-        except Exception as e:
-            logging.error("dhparam size reading failed: %s", str(e))
-    return 0
+def get_dhparam_size(dhparam_pem: bytes) -> int:
+    assert dhparam_pem
+    output = subprocess.check_output(['openssl', 'dhparam', '-text'], input=dhparam_pem, stderr=subprocess.DEVNULL)
+    match = re.match(r'\s*(?:PKCS#3)?\s*DH Parameters: \(([0-9]+) bit\)\n', output.decode('ascii'))
+    if match:
+        return int(match.group(1))
+    raise AcmeError("dhparam size extraction failed: {}", output.decode('ascii'))
 
 
-def get_ecparam_curve(ecparam_pem):
-    if ecparam_pem:
-        try:
-            output = subprocess.check_output(['openssl', 'ecparam', '-text'], input=ecparam_pem.encode('ascii'), stderr=subprocess.DEVNULL)
-            match = re.match(r'ASN1 OID: ([^\s]+)\n', output.decode('ascii'))
-            if match:
-                return match.group(1)
-        except Exception as e:
-            logging.error("ecparam curve reading failed: %s", str(e))
+def get_ecparam_curve(ecparam_pem: bytes) -> str:
+    assert ecparam_pem
+    output = subprocess.check_output(['openssl', 'ecparam', '-text'], input=ecparam_pem, stderr=subprocess.DEVNULL)
+    match = re.match(r'ASN1 OID: ([^\s]+)\n', output.decode('ascii'))
+    if match:
+        return match.group(1)
+    raise AcmeError("ecparam size extraction failed: {}", output.decode('ascii'))
+
+
+def fetch_dhparams(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
+    assert dhparam_size in (2048, 3072, 4096, 8192)
+    url = "https://2ton.com.au/dhparam/{}/{}".format(dhparam_size, dhparam_idx % 128)
+    request = urllib.request.Request(url=url)
+    request.add_header('Host', '2ton.com.au')
+    try:
+        with urllib.request.urlopen(request) as response:
+            # XXX add validation of response
+            return response.read().decode()
+    except urllib.error.HTTPError as error:
+        if (400 <= error.code) and (error.code < 500):
+            logging.warning('dhparams fetching failed (HTTP error: %s %s):\n%s', error.code, error.reason, error.read())
+        else:
+            logging.warning('dhparams fetching failed (HTTP error: %s %s)', error.code, error.reason)
+    except urllib.error.URLError as error:
+        logging.warning('dhparams fetching failed: %s', error.reason)
+    except Exception as error:
+        logging.warning('dhparams fetching failed: %s', str(error))
     return None

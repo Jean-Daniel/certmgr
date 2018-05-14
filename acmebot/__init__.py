@@ -3,6 +3,8 @@ import logging
 
 log = logging.getLogger("acmebot")
 
+SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
+
 
 class AcmeError(Exception):
 

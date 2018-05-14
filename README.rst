@@ -514,10 +514,6 @@ All of these need only be present when the desired value is different from the d
   The value ``["google_testtube"]`` can be used with the Let's Encrypt staging environment for testing.
 * ``renewal_days`` specifies the number of days before expiration when the tool will attempt to renew a certificate.
   The default value is ``30``.
-* ``max_dns_lookup_attempts`` specifies the number of times to check for deployed DNS records before attempting authorizations.
-  The default value is ``60``.
-* ``max_domains_per_order`` specifies the maximum number of domains allowed per authorization order.
-  The default value is ``100``, which is the limit set by Let's Encrypt.
 * ``max_authorization_attempts`` specifies the number of times to check for completed authorizations.
   The default value is ``30``.
 * ``authorization_delay`` specifies the number of seconds to wait between authorization checks.
@@ -769,33 +765,6 @@ Example::
         }
     }
 
-
-Authorizations
---------------
-
-This section specifies a set of host name authorizations to obtain without issuing certificates.
-
-This is used when running in a master/follower configuration,
-the master, having access to local or remote DNS updates or an HTTP server,
-obtains authorizations,
-while the follower issues the certificates.
-
-It is not necessary to specify host name authorizations for any host names used by configured certificates,
-but it is not an error to have overlap.
-
-Authorizations are specified per DNS zone so that associated DNS updates happen in the correct zone.
-
-Simplar to ``alt-names``, a host name of ``"@"`` may be used to specify the zone name.
-
-Example::
-
-    {
-        ...
-        "authorizations": {
-            "example.com": ["@", "www"]
-        },
-        ...
-    }
 
 
 HTTP Challenges
