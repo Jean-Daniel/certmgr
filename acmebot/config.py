@@ -147,7 +147,7 @@ class FileManager(object):
     DEFAULT_DIRECTORIES = {
         'pid': '/var/run',
         'log': '/var/log/acmebot',
-        'symlinks': None,
+        'link': None,
         'resource': '/var/local/acmebot',
         'private_key': '/etc/ssl/private',
         'full_key': '/etc/ssl/private',
@@ -156,7 +156,7 @@ class FileManager(object):
         'chain': '/etc/ssl/certs',
         'param': '/etc/ssl/params',
         'http_challenge': None,
-        'ocsp': '/etc/ssl/ocsp/',
+        'ocsp': '/etc/ssl/ocsp',
         'sct': '/etc/ssl/scts/{name}/{key_type}',
         'archive': '/etc/ssl/archive',
         'temp': None
@@ -188,7 +188,7 @@ class FileManager(object):
 
         # FIXME: properly support multi devices file transactions
         temp_device = get_device_id(temp_dir)
-        safedirs = {'pid', 'log', 'symlinks', 'temp'}
+        safedirs = {'pid', 'log', 'link', 'temp'}
         for dirname, dirpath in directories.items():
             if not dirpath or dirname in safedirs:
                 continue

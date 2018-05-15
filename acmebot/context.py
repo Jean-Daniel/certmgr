@@ -9,10 +9,11 @@ import collections
 from acme import messages, client
 from cryptography.hazmat.primitives import serialization
 
+from acmebot.crypto import load_full_chain
 from . import AcmeError, log, SUPPORTED_KEY_TYPES
 from .config import CertificateSpec, FileManager
 from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam
-from .utils import makedir, archive_file
+from .utils import archive_file
 
 SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
 KeyCipherData = collections.namedtuple('KeyCipherData', ['cipher', 'passphrase', 'forced'])
@@ -84,19 +85,31 @@ class CertificateItem(object):
     @property
     def certificate(self) -> Certificate:
         if self._certificate is self.UNINITIALIZED:
-            self._certificate = self._load_certificate()
+            self._load_certificate_and_chain()
         return self._certificate
 
-    @certificate.setter
-    def certificate(self, value: Certificate):
-        assert self._certificate is not value
-        self._certificate = value
+    @property
+    def chain(self) -> List[Certificate]:
+        if self._chain is self.UNINITIALIZED:
+            self._load_certificate_and_chain()
+        return self._chain
+
+    def update(self, cert: Certificate, chain: List[Certificate]):
+        assert self._certificate is not cert
+        assert self._chain is not chain
+        self._certificate = cert
+        self._chain = chain
         self.updated = True
 
-    def _load_certificate(self):
+    def _load_certificate_and_chain(self):
         cert_path = self.context.fs.filepath('certificate', self.name, self.type)
         try:
-            return Certificate.load(cert_path)
+            certificate, chain = load_full_chain(cert_path)
+            if self._certificate is self.UNINITIALIZED:
+                self._certificate = certificate
+
+            if self._chain is self.UNINITIALIZED:
+                self._chain = chain
         except Exception as e:
             raise AcmeError("certificate '{}' loading failed", cert_path) from e
 

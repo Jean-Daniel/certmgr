@@ -8,6 +8,7 @@ from datetime import datetime
 from io import BytesIO
 from typing import Union, Optional, List, Tuple, Iterable, Callable
 
+import OpenSSL
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
@@ -220,7 +221,7 @@ class Certificate(object):
 CertificateChain = List[Certificate]
 
 
-def load_chain(chain_pem: bytes) -> Optional[CertificateChain]:
+def load_chain(chain_pem: bytes) -> CertificateChain:
     chain = []
     certificate_pems = re.findall(b'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', chain_pem, re.DOTALL)
     for certificate_pem in certificate_pems:
@@ -229,15 +230,18 @@ def load_chain(chain_pem: bytes) -> Optional[CertificateChain]:
 
 
 def load_chain_file(chain_file: str) -> Optional[CertificateChain]:
-    with open(chain_file, 'rb') as f:
-        chain_pem = f.read()
-    return load_chain(chain_pem)
-
-
-def load_full_chain(chain_pem: bytes) -> Optional[Tuple[Certificate, CertificateChain]]:
-    full_chain = load_chain(chain_pem)
-    if not full_chain:
+    try:
+        with open(chain_file, 'rb') as f:
+            chain_pem = f.read()
+        return load_chain(chain_pem)
+    except FileNotFoundError:
         return None
+
+
+def load_full_chain(chain_file: str) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:
+    full_chain = load_chain_file(chain_file)
+    if not full_chain:
+        return None, None
     if len(full_chain) < 2:
         raise AcmeError("full chain must contains at least 2 certificates")
     return full_chain[0], full_chain[1:]

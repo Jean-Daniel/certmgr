@@ -24,6 +24,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from acmebot.verify import verify_certificate_installation
 from . import log, AcmeError
 from .acme import handle_authorizations
 from .config import FileManager, Configuration, CertificateSpec
@@ -55,41 +56,59 @@ class CheckAction(Action):
 
     def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client):
         super().__init__(config, fs, args, acme_client)
-        self.owner = config.fileowner()
+        self._owner = config.fileowner()
+        self._checked = dict()
 
-    def _check_file(self, name, file: str, mode: int):
-        if not os.path.exists(file):
-            return
+    def _check(self, name, file: str, mode: int):
+        try:
+            s = os.stat(file, follow_symlinks=False)
+            if stat.S_IMODE(s.st_mode) != mode:
+                log.info(' - [%s] file permission should be %s not %s', name, oct(mode), oct(stat.S_IMODE(s.st_mode)))
+                os.chmod(file, mode)
 
-        s = os.stat(file, follow_symlinks=False)
-        if stat.S_IMODE(s.st_mode) != mode:
-            log.info('[%s] file permission should be %s not %s', name, mode, stat.S_IMODE(s.st_mode))
-            os.chmod(file, mode)
+            if s.st_uid != self._owner.uid or s.st_gid != self._owner.gid:
+                log.info(' - [%s] file owner/group should be %s/%s not %s/%s', name, self._owner.uid, self._owner.gid, s.st_uid, s.st_gid)
+                os.chown(file, self._owner.uid, self._owner.gid)
+        except FileNotFoundError:
+            pass
 
-        if s.st_uid != self.owner.uid or s.st_gid != self.owner.gid:
-            log.info('[%s] file owner/group should be %s/%s not %s/%s', name, self.owner.uid, self.owner.gid, s.st_uid, s.st_gid)
-            os.chown(file, self.owner.uid, self.owner.gid)
+    def _check_file(self, name, file: str, mode: int, dirmode: int):
+        self._check(name, file, mode)
+        # As dir path may contains variables, it can be different for each certificate item
+        # so we have to test it for every files.
+        dirpath = os.path.basename(file)
+        existing = self._checked.get(dirpath)
+        if existing is None:
+            self._check(name, dirpath, dirmode)
+            self._checked[dirpath] = existing
+        elif dirmode != existing:
+            log.warning("[%s] directory '%s' has conflicting permissions: %s and %s", name, oct(existing), oct(dirmode))
 
     def run(self, certificate: CertificateSpec):
-        log.debug('[%s] checking installed files', certificate.name)
+        log.info('[%s] checking installed files', certificate.name)
 
-        self._check_file(certificate.name, self.fs.filepath('param', certificate.name), 0o644)
-
+        self._check_file(certificate.name, self.fs.filepath('param', certificate.name), 0o644, 0o755)
         for key_type in certificate.key_types:
             # Private Keys
-            self._check_file(certificate.name, self.fs.filepath('private_key', certificate.name, key_type), 0o640)
-            self._check_file(certificate.name, self.fs.filepath('full_key', certificate.name, key_type), 0o640)
+            self._check_file(certificate.name, self.fs.filepath('private_key', certificate.name, key_type), 0o640, 0o750)
+            self._check_file(certificate.name, self.fs.filepath('full_key', certificate.name, key_type), 0o640, 0o750)
 
             # Certificate
-            self._check_file(certificate.name, self.fs.filepath('certificate', certificate.name, key_type), 0o644)
-            self._check_file(certificate.name, self.fs.filepath('chain', certificate.name, key_type), 0o644)
-            self._check_file(certificate.name, self.fs.filepath('full_certificate', certificate.name, key_type), 0o644)
+            self._check_file(certificate.name, self.fs.filepath('certificate', certificate.name, key_type), 0o644, 0o755)
+            self._check_file(certificate.name, self.fs.filepath('chain', certificate.name, key_type), 0o644, 0o755)
+            self._check_file(certificate.name, self.fs.filepath('full_certificate', certificate.name, key_type), 0o644, 0o755)
 
             # OCSP
-            self._check_file(certificate.name, self.fs.filepath('ocsp', certificate.name, key_type), 0o644)
+            self._check_file(certificate.name, self.fs.filepath('ocsp', certificate.name, key_type), 0o644, 0o755)
 
             for ct_log_name in certificate.ct_submit_logs:
-                self._check_file(certificate.name, self.fs.filepath('sct', certificate.name, key_type, ct_log_name=ct_log_name), 0o644)
+                self._check_file(certificate.name, self.fs.filepath('sct', certificate.name, key_type, ct_log_name=ct_log_name), 0o644, 0o755)
+
+    def finalize(self):
+        resource = self.fs.directory('resource')
+        # Check global file here
+        self._check_file('client', os.path.join(resource, 'client_key.json'), 0o600, 0o700)
+        self._check_file('registration', os.path.join(resource, 'registration.json'), 0o600, 0o700)
 
 
 class RevokeAction(Action):
@@ -147,7 +166,7 @@ class LinkAction(Action):
 
     def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client):
         super().__init__(config, fs, args, acme_client)
-        self.root = fs.directory('symlinks')
+        self.root = fs.directory('link')
 
     def process_symlink(self, name: str, target: str, link: str):
         link_path = os.path.join(self.root, name, link)
@@ -225,7 +244,8 @@ class LinkAction(Action):
 class VerifyAction(Action):
 
     def run(self, certificate: CertificateSpec):
-        pass
+        context = CertificateContext(certificate)
+        verify_certificate_installation(context, self.config.int('max_ocsp_verify_attempts'), self.config.int('ocsp_verify_retry_delay'))
 
 
 class UpdateAction(Action):
@@ -259,10 +279,11 @@ class UpdateAction(Action):
             time.sleep(5)  # allow time for services to reload before verification
 
         if self.args.verify:
-            verify = VerifyAction(self.config, self.fs, self.args, self.acme_client)
+            max_ocsp_verify_attempts = self.config.int('max_ocsp_verify_attempts')
+            ocsp_verify_retry_delay = self.config.int('ocsp_verify_retry_delay')
             for context in self._done:
                 try:
-                    verify.run(context.spec)
+                    verify_certificate_installation(context, max_ocsp_verify_attempts, ocsp_verify_retry_delay)
                 except AcmeError as e:
                     log.error("[%s] validation error: %s", context.name, str(e))
 
@@ -404,34 +425,6 @@ class AcmeManager(object):
             # Reset formatter in case we don't want color
             stream.setFormatter(logging.Formatter())
 
-    # def _rename_file(self, old_file_path, new_file_path, chmod=None, timestamp=None):
-    #     return rename_file(old_file_path, new_file_path, chmod, self.config.get('file_user'), self.config.get('file_group'), timestamp)
-    #
-
-    # def update_certificate(self, certificate_name: str):
-    #     self.updated_certificates.add(certificate_name)
-    #
-    # def update_services(self, services):
-    #     if services:
-    #         self.updated_services.update(services)
-    #
-    # def reload_services(self):
-    #     reloaded = False
-    #     for service_name in self.updated_services:
-    #         service_command = self.config.service(service_name)
-    #         if service_command:
-    #             log.info('Reloading service %s', service_name)
-    #             try:
-    #                 output = subprocess.check_output(service_command, shell=True, stderr=subprocess.STDOUT)
-    #                 reloaded = True
-    #                 if output:
-    #                     log.info('Service "%s" responded to reload with:\n%s', service_name, output)
-    #             except subprocess.CalledProcessError as error:
-    #                 log.warning('Service "%s" reload failed, code: %s:\n%s', service_name, error.returncode, error.output)
-    #         else:
-    #             log.error('Service %s does not have registered reload command', service_name)
-    #     return reloaded
-    #
     # def save_private_key(self, file_type, file_name, key_type, private_key, key_cipher_data,
     #                      timestamp=None, certificate=None, chain=None, dhparam_pem=None, ecparam_pem=None):
     #     with FileTransaction(file_type, self.fs.filepath(file_type, file_name, key_type), chmod=0o640, timestamp=timestamp) as transaction:
@@ -450,9 +443,6 @@ class AcmeManager(object):
     #                 save_certificate(transaction, certificate, chain=chain, dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem)
     #     return transaction
     #
-    # def archive_private_key(self, file_type, file_name, key_type, archive_name='', archive_date=None):
-    #     self._archive_file(file_type, self.fs.filepath(file_type, file_name, key_type), archive_name=archive_name, archive_date=archive_date)
-    #
     # def load_root_certificates(self):
     #     root_certificates = collections.OrderedDict()
     #     for key_type in SUPPORTED_KEY_TYPES:
@@ -464,37 +454,10 @@ class AcmeManager(object):
     #         save_certificate(transaction.file, certificate, chain=chain, root_certificate=root_certificate, dhparam_pem=dhparam_pem, ecparam_pem=ecparam_pem)
     #     return transaction
     #
-    # def archive_certificate(self, file_type, file_name, key_type, archive_name='', archive_date=None):
-    #     self._archive_file(file_type, self.fs.filepath(file_type, file_name, key_type), archive_name=archive_name, archive_date=archive_date)
-    #
-    # def load_chain(self, file_name, key_type):
-    #     chain = []
-    #     try:
-    #         pem_data = None
-    #         if self.fs.directory('chain'):
-    #             chain_file_path = self.fs.filepath('chain', file_name, key_type)
-    #             if os.path.isfile(chain_file_path):
-    #                 with open(chain_file_path) as chain_file:
-    #                     pem_data = chain_file.read()
-    #                     index = 0
-    #         if not pem_data:
-    #             with open(self.fs.filepath('certificate', file_name, key_type)) as certificate_file:
-    #                 pem_data = certificate_file.read()
-    #                 index = 1
-    #         certificate_pems = re.findall('-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', pem_data, re.DOTALL)[index:]
-    #         for certificate_pem in certificate_pems:
-    #             chain.append(OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certificate_pem.encode('ascii')))
-    #     except Exception as e:
-    #         log.warning("error loading chain: %s", str(e))
-    #     return chain
-    #
     # def save_chain(self, file_name, key_type, chain):
     #     with FileTransaction('chain', self.fs.filepath('chain', file_name, key_type), chmod=0o644) as transaction:
     #         save_chain(transaction.file, chain)
     #     return transaction
-    #
-    # def archive_chain(self, file_name, key_type, archive_name='', archive_date=None):
-    #     self._archive_file('chain', self.fs.filepath('chain', file_name, key_type), archive_name=archive_name, archive_date=archive_date)
     #
     # def params_present(self, file_name, dhparam_pem, ecparam_pem):
     #     param_file_path = self.fs.filepath('param', file_name)
@@ -571,10 +534,6 @@ class AcmeManager(object):
     #             transaction.write(sct)
     #         return transaction
     #     return None
-    #
-    # def archive_sct(self, file_name, key_type, ct_log_name, archive_name='', archive_date=None):
-    #     self._archive_file('sct', self.fs.filepath('sct', file_name, key_type, ct_log_name=ct_log_name), archive_name=archive_name,
-    #                        archive_date=archive_date)
     #
     # def load_oscp_response(self, file_name, key_type):
     #     return load_ocsp_response(self.fs.filepath('ocsp', file_name, key_type))
