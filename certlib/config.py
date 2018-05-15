@@ -10,7 +10,7 @@ from typing import Iterable, Optional, Dict, Union, Tuple
 import collections
 
 from . import AcmeError, log, SUPPORTED_KEY_TYPES
-from .utils import FileTransaction, get_device_id, host_in_list, makedir, FileOwner
+from .utils import FileTransaction, get_device_id, host_in_list, makedir, FileOwner, SCTLog
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
@@ -49,6 +49,7 @@ def _merge(section: str, dest: dict, values: dict, check: bool = True):
     if check:
         _check(section, dest, values)
     dest.update(values)
+    return dest
 
 
 class VerifyTarget(object):
@@ -76,12 +77,11 @@ class VerifyTarget(object):
 
 
 class PrivateKeySpec(object):
-    __slots__ = ('types', 'size', 'curve', 'cipher', 'passphrase')
+    __slots__ = ('types', 'size', 'curve', 'passphrase')
 
     def __init__(self, spec, defaults):
         self.size = get_int(spec, 'key_size', defaults['key_size'])
         self.curve = spec.get('key_curve', defaults['key_curve'])
-        self.cipher = spec.get('key_cipher', defaults['key_cipher'])
         self.passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
 
         self.types = set()
@@ -103,7 +103,7 @@ class CertificateSpec(object):
                  'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
-    def __init__(self, name, spec, defaults):
+    def __init__(self, name, spec, defaults, ct_logs):
         self.name = name
         self.private_key = PrivateKeySpec(spec, defaults)
         self.common_name = spec.get('common_name', name).strip().lower()
@@ -139,16 +139,23 @@ class CertificateSpec(object):
         self.ocsp_must_staple = get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
         self.ocsp_responder_urls = get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
 
-        self.ct_submit_logs = get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs'])
+        self.ct_submit_logs = []
+        for ct_log_name in get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
+            ct_log = ct_logs.get(ct_log_name)
+            if ct_log:
+                self.ct_submit_logs.append(SCTLog(ct_log_name, ct_log['id'], ct_log['url']))
+            else:
+                log.warning("[config] certificate '%s' specify undefined ct_log '%s'", name, ct_log_name)
+
         self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
 
 
 class FileManager(object):
     DEFAULT_DIRECTORIES = {
         'pid': '/var/run',
-        'log': '/var/log/acmebot',
+        'log': '/var/log/certmgr',
         'link': None,
-        'resource': '/var/local/acmebot',
+        'resource': '/var/local/certmgr',
         'private_key': '/etc/ssl/private',
         'full_key': '/etc/ssl/private',
         'certificate': '/etc/ssl/certs',
@@ -163,7 +170,7 @@ class FileManager(object):
     }
 
     DEFAULT_FILENAMES = {
-        'log': 'acmebot.log',
+        'log': 'certmgr.log',
         'private_key': '{name}{suffix}.key',
         'full_key': '{name}_full{suffix}.key',
         'certificate': '{name}{suffix}.pem',
@@ -203,9 +210,11 @@ class FileManager(object):
         return self._filenames.get(file_type)
 
     def filepath(self, file_type, file_name, key_type=None, **kwargs) -> str:
-        if self.directory(file_type) is not None:
-            directory = self.directory(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
+        dirtpl = self.directory(file_type)
+        if dirtpl:
+            directory = dirtpl.format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
             file_name = self.filename(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
+            assert '/' not in file_name, file_name
             return os.path.join(directory, file_name.replace('*', '_'))
         return ''
 
@@ -238,8 +247,56 @@ def configure_logger(level: Optional[str], fs: FileManager):
         # if level is None, don't create log file
         if fs.directory('log') and fs.filename('log'):
             makedir(fs.directory('log'), 0o700)
-            log_file_path = fs.filepath('log', 'acmebot')
+            log_file_path = fs.filepath('log', 'certmgr')
             log.addHandler(logging.FileHandler(log_file_path, encoding='UTF-8'))
+
+
+_DEFAULT_CT_LOGS = {
+    'google_pilot': {
+        'url': 'https://ct.googleapis.com/pilot',
+        'id': 'pLkJkLQYWBSHuxOizGdwCjw1mAT5G9+443fNDsgN3BA='
+    },
+    'google_icarus': {
+        'url': 'https://ct.googleapis.com/icarus',
+        'id': 'KTxRllTIOWW6qlD8WAfUt2+/WHopctykwwz05UVH9Hg='
+    },
+    'google_rocketeer': {
+        'url': 'https://ct.googleapis.com/rocketeer',
+        'id': '7ku9t3XOYLrhQmkfq+GeZqMPfl+wctiDAMR7iXqo/cs='
+    },
+    'google_skydiver': {
+        'url': 'https://ct.googleapis.com/skydiver',
+        'id': 'u9nfvB+KcbWTlCOXqpJ7RzhXlQqrUugakJZkNo4e0YU='
+    },
+    'google_testtube': {
+        'url': 'http://ct.googleapis.com/testtube',
+        'id': 'sMyD5aX5fWuvfAnMKEkEhyrH6IsTLGNQt8b9JuFsbHc='
+    },
+    'google_argon2018': {
+        'url': 'https://ct.googleapis.com/logs/argon2018',
+        'id': 'pFASaQVaFVReYhGrN7wQP2KuVXakXksXFEU+GyIQaiU='
+    },
+    'digicert': {
+        'url': 'https://ct1.digicert-ct.com/log',
+        'id': 'VhQGmi/XwuzT9eG9RLI+x0Z2ubyZEVzA75SYVdaJ0N0='
+    },
+    'symantec_ct': {
+        'url': 'https://ct.ws.symantec.com',
+        'id': '3esdK3oNT6Ygi4GtgWhwfi6OnQHVXIiNPRHEzbbsvsw='
+    },
+    'symantec_vega': {
+        'url': 'https://vega.ws.symantec.com',
+        'id': 'vHjh38X2PGhGSTNNoQ+hXwl5aSAJwIG08/aRfz7ZuKU='
+    },
+    'cnnic': {
+        'url': 'https://ctserver.cnnic.cn',
+        'id': 'pXesnO11SN2PAltnokEInfhuD0duwgPC7L7bGF8oJjg='
+    },
+    'cloudflare_nimbus2018': {
+        'url': 'https://ct.cloudflare.com/logs/nimbus2018',
+        'id': '23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q='
+    }
+}
 
 
 class Configuration(object):
@@ -271,13 +328,13 @@ class Configuration(object):
             else:
                 level = cfg.get('log_level')
 
-            directories = FileManager.DEFAULT_DIRECTORIES
+            directories = dict(FileManager.DEFAULT_DIRECTORIES)
             values = data.get('directories')
             if values:
                 # check later when logger ready
                 _merge('directories', directories, values, check=False)
 
-            filenames = FileManager.DEFAULT_FILENAMES
+            filenames = dict(FileManager.DEFAULT_FILENAMES)
             values = data.get('file_names')
             if values:
                 # check later when logger ready
@@ -286,6 +343,7 @@ class Configuration(object):
             filemgr = FileManager(os.path.dirname(cfg.path), directories, filenames)
             configure_logger(level, filemgr)
 
+            sct_logs = dict(_DEFAULT_CT_LOGS)
             for section, values in data.items():
                 # TODO: http_challenges
                 if section == 'account':
@@ -303,11 +361,16 @@ class Configuration(object):
                 elif section == 'services':
                     _merge('services', cfg.services, values, check=False)
                 elif section == 'ct_logs':
-                    _merge('ct_logs', cfg.ct_logs, values, check=False)
+                    _merge('ct_logs', sct_logs, values, check=False)
                 elif section == 'certificates':
-                    cfg._parse_certificates(values)
+                    pass
                 else:
                     log.warning('[config] unknown section name: "%s"', section)
+
+            certificates = data.get('certificates')
+            if not certificates:
+                raise AcmeError('[config] section "certificates" is required and must not be empty.')
+            cfg._parse_certificates(certificates, sct_logs)
 
         return cfg, filemgr
 
@@ -320,7 +383,6 @@ class Configuration(object):
             'color_output': True,
             'key_size': 4096,
             'key_curve': 'secp384r1',
-            'key_cipher': 'blowfish',
             'key_passphrase': None,
             'dhparam_size': 2048,
             'ecparam_curve': 'secp384r1',
@@ -369,52 +431,6 @@ class Configuration(object):
             'znc': 'systemctl restart znc'
         }
 
-        self.ct_logs = {
-            'google_pilot': {
-                'url': 'https://ct.googleapis.com/pilot',
-                'id': 'pLkJkLQYWBSHuxOizGdwCjw1mAT5G9+443fNDsgN3BA='
-            },
-            'google_icarus': {
-                'url': 'https://ct.googleapis.com/icarus',
-                'id': 'KTxRllTIOWW6qlD8WAfUt2+/WHopctykwwz05UVH9Hg='
-            },
-            'google_rocketeer': {
-                'url': 'https://ct.googleapis.com/rocketeer',
-                'id': '7ku9t3XOYLrhQmkfq+GeZqMPfl+wctiDAMR7iXqo/cs='
-            },
-            'google_skydiver': {
-                'url': 'https://ct.googleapis.com/skydiver',
-                'id': 'u9nfvB+KcbWTlCOXqpJ7RzhXlQqrUugakJZkNo4e0YU='
-            },
-            'google_testtube': {
-                'url': 'http://ct.googleapis.com/testtube',
-                'id': 'sMyD5aX5fWuvfAnMKEkEhyrH6IsTLGNQt8b9JuFsbHc='
-            },
-            'google_argon2018': {
-                'url': 'https://ct.googleapis.com/logs/argon2018',
-                'id': 'pFASaQVaFVReYhGrN7wQP2KuVXakXksXFEU+GyIQaiU='
-            },
-            'digicert': {
-                'url': 'https://ct1.digicert-ct.com/log',
-                'id': 'VhQGmi/XwuzT9eG9RLI+x0Z2ubyZEVzA75SYVdaJ0N0='
-            },
-            'symantec_ct': {
-                'url': 'https://ct.ws.symantec.com',
-                'id': '3esdK3oNT6Ygi4GtgWhwfi6OnQHVXIiNPRHEzbbsvsw='
-            },
-            'symantec_vega': {
-                'url': 'https://vega.ws.symantec.com',
-                'id': 'vHjh38X2PGhGSTNNoQ+hXwl5aSAJwIG08/aRfz7ZuKU='
-            },
-            'cnnic': {
-                'url': 'https://ctserver.cnnic.cn',
-                'id': 'pXesnO11SN2PAltnokEInfhuD0duwgPC7L7bGF8oJjg='
-            },
-            'cloudflare_nimbus2018': {
-                'url': 'https://ct.cloudflare.com/logs/nimbus2018',
-                'id': '23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q='
-            }
-        }
         self.certificates = OrderedDict()  # type: Dict[str, CertificateSpec]
 
     def get(self, item: str, default=None):
@@ -443,19 +459,13 @@ class Configuration(object):
         except Exception as e:
             raise AcmeError("Failed to determine user and group ID") from e
 
-    def hook(self, hook_name: str):
-        return self.hooks[hook_name]
-
-    def ct_log(self, ct_log_name):
-        return self.ct_logs.get(ct_log_name)
-
     def service(self, service_name: str) -> Optional[str]:
         return self.services[service_name]
 
-    def _parse_certificates(self, certificates: dict):
+    def _parse_certificates(self, certificates: dict, sct_logs: dict):
         host_names = set()
         for certificate_name, certificate_spec in certificates.items():
-            cert = CertificateSpec(certificate_name, certificate_spec, self.settings)
+            cert = CertificateSpec(certificate_name, certificate_spec, self.settings, sct_logs)
             for host_name in cert.alt_names:
                 if host_name in host_names:
                     log.info("[config] {} host name defined in two certificates ({} and an other one)", host_name, certificate_name)

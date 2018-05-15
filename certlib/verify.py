@@ -6,11 +6,9 @@ from typing import Optional, Tuple, List
 import OpenSSL
 from asn1crypto import ocsp as asn1_ocsp
 
-from acmebot.config import CertificateSpec
-from acmebot.context import CertificateContext
-from acmebot.context import CertificateItem
-from acmebot.crypto import Certificate
-from . import log, AcmeError, SUPPORTED_KEY_TYPES
+from . import log, AcmeError
+from .context import CertificateContext, CertificateItem
+from .crypto import Certificate
 from .ocsp import ocsp_response_status
 
 
@@ -19,7 +17,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
     ty = ty.lower()
     if 'smtp' == ty:
         log.debug('SMTP: %s', sock.recv(4096))
-        sock.send(b'ehlo acmebot.org\r\n')
+        sock.send(b'ehlo certmgr.org\r\n')
         buffer = sock.recv(4096)
         log.debug('SMTP: %s', buffer)
         if b'STARTTLS' not in buffer:

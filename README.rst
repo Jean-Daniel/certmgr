@@ -483,9 +483,6 @@ All of these need only be present when the desired value is different from the d
   The default value is ``"secp384r1"``.
   Available curves are ``"secp256r1"``, ``"secp384r1"``, and ``"secp521r1"``.
   ECDSA certificates can be turned off by setting this value to ``null``.
-* ``key_cipher`` specifies the cipher algorithm used to encrypt private keys.
-  The default value is ``"blowfish"``.
-  Available ciphers are those accepted by your version of OpenSSL's EVP_get_cipherbyname().
 * ``key_passphrase`` specifies the passphrase used to encrypt private keys.
   The default value is ``null``.
   A value of ``null`` or ``false`` will result in private keys being written unencrypted.
@@ -544,7 +541,6 @@ Example::
             "log_level": "debug",
             "key_size": 4096,
             "key_curve": "secp384r1",
-            "key_cipher": "blowfish",
             "key_passphrase": null,
             "dhparam_size": 2048,
             "ecparam_curve": "secp384r1",
@@ -721,9 +717,6 @@ The name of each certificate is used as the name of the certificate files.
   The default value is the value specified in the ``settings`` section.
   Available curves are ``"secp256r1"``, ``"secp384r1"``, and ``"secp521r1"``.
   ECDSA certificates can be turned off by setting this value to ``null``.
-* ``key_cipher`` specifies the cipher algorithm used to encrypt the private keys.
-  The default value is the value specified in the ``settings`` section.
-  Available ciphers those accepted by your version of OpenSSL's EVP_get_cipherbyname().
 * ``key_passphrase`` specifies the passphrase used to encrypt private keys.
   The default value is the value specified in the ``settings`` section.
   A value of ``null`` or ``false`` will result in private keys being written unencrypted.
@@ -755,7 +748,6 @@ Example::
                 "key_types": ["rsa", "ecdsa"],
                 "key_size": 4096,
                 "key_curve": "secp384r1",
-                "key_cipher": "blowfish",
                 "key_passphrase": null,
                 "ocsp_must_staple": false,
                 "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],

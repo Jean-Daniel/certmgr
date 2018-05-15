@@ -8,8 +8,8 @@
 import logging
 import os
 
-from acmebot import AcmeError
-from acmebot.manager import AcmeManager
+from certlib import AcmeError
+from certlib.manager import AcmeManager
 
 
 def verify_requirements():
@@ -52,6 +52,6 @@ if __name__ == '__main__':  # called from the command line
     try:
         script_dir = os.path.dirname(os.path.realpath(__file__))
         script_name = os.path.basename(__file__)
-        AcmeManager(script_dir, 'acmebot').run()
+        AcmeManager(script_dir, script_name).run()
     except AcmeError as e:
         logging.exception(e)

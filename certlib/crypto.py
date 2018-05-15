@@ -6,16 +6,15 @@ import subprocess
 import urllib
 from datetime import datetime
 from io import BytesIO
-from typing import Union, Optional, List, Tuple, Iterable, Callable
+from typing import Union, Optional, List, Tuple, Iterable, Callable, Type, TypeVar
 
-import OpenSSL
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat
 
-from acmebot import AcmeError
+from . import AcmeError
 
 # FIXME: should be dynamic ?
 _SUPPORTED_CURVES = {
@@ -49,8 +48,13 @@ class PrivateKey(metaclass=abc.ABCMeta):
     def match_certificate(self, certificate: 'Certificate'):
         return self.public_key_bytes() == certificate.public_key_bytes()
 
-    #    def encode(self):
-    #        return self._key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=NoEncryption())
+    def encode(self, password: Union[str, bytes] = None):
+        cipher = serialization.NoEncryption()
+        if password:
+            if isinstance(password, str):
+                password = password.encode("utf-8")
+            cipher = serialization.BestAvailableEncryption(password)
+        return self._key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=cipher)
 
     def create_csr(self, common_name: str, alt_names: Iterable[str] = (), must_staple=False) -> x509.CertificateSigningRequest:
         subject = [
@@ -123,7 +127,7 @@ class _ECDSAKey(PrivateKey):
 
     @property
     def params(self) -> str:
-        return self._key.curve
+        return self._key.curve.name
 
     def __str__(self):
         return 'curve {key_curve}'.format(key_curve=self.params)
@@ -144,12 +148,16 @@ class Certificate(object):
 
         return self._cert == other._cert
 
-    def encode(self) -> bytes:
-        return self._cert.public_bytes(serialization.Encoding.PEM)
+    def encode(self, pem=True) -> bytes:
+        return self._cert.public_bytes(serialization.Encoding.PEM if pem else serialization.Encoding.DER)
 
     # to test if certificate and private key match
     def public_key_bytes(self):
         return self._cert.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+    @property
+    def serial_number(self) -> int:
+        return self._cert.serial_number
 
     @property
     def not_before(self) -> datetime:
@@ -161,22 +169,41 @@ class Certificate(object):
 
     @property
     def common_name(self) -> str:
-        return self._cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0]
+        return self._cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
+
+    @property
+    def x509_certificate(self) -> x509.Certificate:
+        return self._cert
+
+    E = TypeVar('E', bound=x509.ExtensionType, covariant=True)
+
+    def _extension(self, cls: Type[E]) -> Optional[E]:
+        try:
+            return self._cert.extensions.get_extension_for_class(cls).value
+        except x509.ExtensionNotFound:
+            return None
 
     @property
     def alt_names(self) -> Iterable[str]:
-        ext = self._cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        ext = self._extension(x509.SubjectAlternativeName)
         if ext:
-            return [v.value.decode('ascii') for v in ext.get_values_for_type(x509.DNSName)]
+            return [v for v in ext.get_values_for_type(x509.DNSName)]
         return []
 
     @property
-    def has_oscp_must_staple(self) -> bool:
-        ext = self._cert.extensions.get_extension_for_class(x509.TLSFeature)
+    def ocsp_urls(self):
+        ext = self._extension(x509.AuthorityInformationAccess)
         if ext:
-            for feature in ext:
-                if feature == x509.TLSFeatureType.status_request:
-                    return True
+            return [
+                access.access_location.value for access in ext if access.access_method == x509.AuthorityInformationAccessOID.OCSP
+            ]
+        return None
+
+    @property
+    def has_oscp_must_staple(self) -> bool:
+        ext = self._extension(x509.TLSFeature)
+        if ext:
+            return any(feature == x509.TLSFeatureType.status_request for feature in ext)
         return False
 
     # def digest(self, digest='sha256') -> str:
@@ -191,7 +218,8 @@ class Certificate(object):
         except FileNotFoundError:
             return None
 
-    def dump(self, stream: BytesIO, chain: 'CertificateChain' = None, root_certificate: 'Certificate' = None, dhparam_pem: bytes = None, ecparam_pem: bytes = None):
+    def dump(self, stream: BytesIO, chain: 'CertificateChain' = None, dhparam_pem: bytes = None, ecparam_pem: bytes = None,
+             root_certificate: 'Certificate' = None):
         # Header
         stream.write(self.common_name.encode("utf-8"))
         stream.write(b' issued at ')
@@ -238,13 +266,20 @@ def load_chain_file(chain_file: str) -> Optional[CertificateChain]:
         return None
 
 
-def load_full_chain(chain_file: str) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:
-    full_chain = load_chain_file(chain_file)
+def _load_full_chain(full_chain: List[Certificate]) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:
     if not full_chain:
         return None, None
     if len(full_chain) < 2:
         raise AcmeError("full chain must contains at least 2 certificates")
     return full_chain[0], full_chain[1:]
+
+
+def load_full_chain(chain_pem: bytes) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:
+    return _load_full_chain(load_chain(chain_pem))
+
+
+def load_full_chain_file(chain_file: str) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:
+    return _load_full_chain(load_chain_file(chain_file))
 
 
 def save_chain(chain_file: BytesIO, chain: CertificateChain, lead_in=b''):

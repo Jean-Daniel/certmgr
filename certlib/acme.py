@@ -1,24 +1,119 @@
 import datetime
+import json
 import os
+import sys
 import time
+import urllib
 from typing import List, Dict, Optional
+from urllib import parse
 
 import collections
+import josepy
+import pkg_resources
 from acme import messages, client
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from . import AcmeError, log
 from .config import FileManager
-from .utils import open_file
+from .utils import open_file, makedir, FileTransaction, commit_file_transactions
 
 
-def get_challenge(authorization_resource: messages.AuthorizationResource, ty: str) -> Optional[messages.ChallengeBody]:
+def _user_agent():
+    acmelib = pkg_resources.get_distribution('acme')
+    return 'certmgr/1.0.0 acme-python/{acme_version}'.format(acme_version=acmelib.version if acmelib else "0.0.0")
+
+
+def _generate_client_key():
+    return josepy.JWKRSA(key=rsa.generate_private_key(public_exponent=65537, key_size=4096, backend=default_backend()))
+
+
+def connect_client(resource_dir: str, account: str, directory_url: str, archive_dir: Optional[str]) -> client.ClientV2:
+    makedir(resource_dir, 0o600)
+    generated_client_key = False
+    client_key_path = os.path.join(resource_dir, 'client_key.json')
+    try:
+        with open(client_key_path) as f:
+            client_key = josepy.JWKRSA.fields_from_json(json.load(f))
+        log.debug('Loaded client key %s', client_key_path)
+    except FileNotFoundError:
+        log.info('Client key not present, generating')
+        client_key = _generate_client_key()
+        generated_client_key = True
+
+    registration = None
+    registration_path = os.path.join(resource_dir, 'registration.json')
+    try:
+        with open(registration_path) as f:
+            registration = messages.RegistrationResource.json_loads(f.read())
+            log.debug('Loaded registration %s', registration_path)
+            acme_url = urllib.parse.urlparse(directory_url)
+            reg_url = urllib.parse.urlparse(registration.uri)
+            if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
+                log.info('ACME service URL has changed, re-registering with new client key')
+                registration = None
+                # ACME-ISSUE Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
+                client_key = _generate_client_key()
+                generated_client_key = True
+    except FileNotFoundError:
+        pass
+
+    try:
+        net = client.ClientNetwork(client_key, account=registration, user_agent=_user_agent())
+        log.debug("Fetching meta from acme server '%s'", directory_url)
+        directory = messages.Directory.from_json(net.get(directory_url).json())
+        acme_client = client.ClientV2(directory, net)
+    except Exception as error:
+        raise AcmeError("Can't connect to ACME service") from error
+
+    if registration:
+        return acme_client
+
+    log.info('Registering client')
+    try:
+        reg = messages.NewRegistration.from_data(email=account)
+        if "terms_of_service" in acme_client.directory.meta:
+            tos = acme_client.directory.meta.terms_of_service
+            if sys.stdin.isatty():
+                sys.stdout.write('ACME service has the following terms of service:\n')
+                sys.stdout.write(tos)
+                sys.stdout.write('\n')
+                answer = input('Accept? (Y/n) ')
+                if answer and not answer.lower().startswith('y'):
+                    raise Exception('Terms of service rejected.')
+                log.debug('Terms of service accepted.')
+            else:
+                log.debug('Terms of service auto-accepted: %s', tos)
+            reg = reg.update(terms_of_service_agreed=True)
+
+        registration = acme_client.new_account(reg)
+    except Exception as error:
+        raise AcmeError("Can't register with ACME service") from error
+
+    transactions = []
+    if generated_client_key:
+        with FileTransaction('client', client_key_path, chmod=0o600, mode='w') as client_key_transaction:
+            client_key_transaction.write(json.dumps(client_key.fields_to_partial_json()))
+            client_key_transaction.message = 'Saved client key'
+            transactions.append(client_key_transaction)
+
+    with FileTransaction('registration', registration_path, chmod=0o600, mode='w') as registration_transaction:
+        registration_transaction.write(registration.json_dumps())
+        registration_transaction.message = 'Saved registration'
+        transactions.append(registration_transaction)
+    try:
+        commit_file_transactions(transactions, archive_dir)
+    except Exception as e:
+        raise AcmeError('Unable to save registration to {}', registration_path) from e
+
+    return acme_client
+
+
+def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: str) -> Optional[messages.ChallengeBody]:
     for challenge in authorization_resource.body.challenges:
         if ty == challenge.typ:
             return challenge
     return None
-
-
-AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'domain_name', 'authorization_resource'])
 
 
 def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_client: client.ClientV2,
@@ -30,10 +125,10 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
     for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
         domain_name = authorization_resource.body.identifier.value
         if messages.STATUS_VALID == authorization_resource.body.status:
-            log.debug('%s already authorized', domain_name)
+            log.debug('Domain "%s" already authorized', domain_name)
             authorizations.append(authorization_resource)
         elif messages.STATUS_PENDING == authorization_resource.body.status:
-            log.info('Requesting authorization for %s', domain_name)
+            log.info('Requesting authorization for domain "%s"', domain_name)
             authorization_resources[domain_name] = authorization_resource
         else:
             raise AcmeError('Unexpected status "{}" for authorization of {}', authorization_resource.body.status, domain_name)
@@ -49,7 +144,7 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
         http_challenge_directory = fs.http_challenge_directory(identifier)
         if not http_challenge_directory:
             raise AcmeError("no http_challenge_directory directory specified for domain {}", domain_name)
-        challenge = get_challenge(authorization_resource, 'http-01')
+        challenge = _get_challenge(authorization_resource, 'http-01')
         if not challenge:
             raise AcmeError('Unable to use http-01 challenge for {}', domain_name)
         challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
@@ -79,12 +174,15 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
     return authorizations
 
 
+AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'domain_name', 'authorization_resource'])
+
+
 def _get_authorizations(acme_client: client.ClientV2, authorization_resources: Dict[str, messages.AuthorizationResource],
                         retry: int, delay: int) -> List[messages.AuthorizationResource]:
     # answer challenges
     for domain_name, authorization_resource in authorization_resources.items():
         log.debug('Answering challenge for %s', domain_name)
-        challenge = get_challenge(authorization_resource, 'http-01')
+        challenge = _get_challenge(authorization_resource, 'http-01')
         try:
             acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
         except Exception as error:
@@ -115,10 +213,10 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
         attempts[authorization_resource] += 1
         if messages.STATUS_VALID == authorization_resource.body.status:
             authorizations.append(authorization_resource)
-            log.debug('Authorization received')
+            log.info('Domain "%s" authorized', domain_name)
             continue
         elif messages.STATUS_INVALID == authorization_resource.body.status:
-            error = get_challenge(authorization_resource, 'http-01').error
+            error = _get_challenge(authorization_resource, 'http-01').error
             raise AcmeError('Authorization failed for domain {}: {}', domain_name, error.detail if error else 'Unknown error')
         elif messages.STATUS_PENDING == authorization_resource.body.status:
             if attempts[authorization_resource] > retry:

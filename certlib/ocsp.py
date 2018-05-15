@@ -1,15 +1,16 @@
 import logging
 import urllib
 from datetime import datetime
+from typing import Optional
 from urllib import request, parse, error
 
-from asn1crypto import ocsp as asn1_ocsp
+from asn1crypto import ocsp
 
 
-def load_ocsp_response(filepath: str):
+def load_ocsp_response(filepath: str) -> Optional[ocsp.OCSPResponse]:
     try:
         with open(filepath, 'rb') as ocsp_file:
-            return asn1_ocsp.OCSPResponse.load(ocsp_file.read())
+            return ocsp.OCSPResponse.load(ocsp_file.read())
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -49,7 +50,7 @@ def fetch_ocsp_response(ocsp_url, ocsp_request, last_update):
     try:
         with urllib.request.urlopen(req) as response:
             # XXX add validation of response
-            return asn1_ocsp.OCSPResponse.load(response.read())
+            return ocsp.OCSPResponse.load(response.read())
     except urllib.error.HTTPError as e:
         if last_update and (304 == e.code):
             return False

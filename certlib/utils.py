@@ -1,17 +1,22 @@
+import base64
 import datetime
 import grp
+import json
 import logging
 import os
 import pwd
 import shlex
 import subprocess
 import tempfile
+import urllib
 from collections import OrderedDict
-from typing import Optional, Tuple, Iterable
+from typing import Optional, Tuple, Iterable, List
+from urllib import request, error
 
 import collections
 
 from . import log
+from .crypto import Certificate
 
 
 class ColorFormatter(logging.Formatter):
@@ -89,60 +94,63 @@ def host_in_list(host_name, haystack_host_names):
 
 
 # ========= File System
-def makedir(dir_path: str, chmod: int = None, warn: bool = True):
-    if not os.path.isdir(dir_path):
+FileOwner = collections.namedtuple('FileOwner', ('uid', 'gid', 'is_self'))
+
+
+def dirmode(mode: int) -> int:
+    if mode & 0o700:
+        mode |= 0o100
+    if mode & 0o070:
+        mode |= 0o010
+    if mode & 0o007:
+        mode |= 0o001
+    return mode
+
+
+def makedir(dir_path: str, chmod: int = None, owner: FileOwner = None):
+    os.makedirs(dir_path, exist_ok=True)
+    # try to guess dir mode for a file mode
+    if chmod:
         try:
-            os.makedirs(dir_path)
-            if chmod:
-                if chmod & 0o700:
-                    chmod |= 0o100
-                if chmod & 0o070:
-                    chmod |= 0o010
-                if chmod & 0o007:
-                    chmod |= 0o001
-                try:
-                    os.chmod(dir_path, chmod)
-                except PermissionError as error:
-                    if warn:
-                        logging.warning('Unable to set directory mode for %s: %s', dir_path, str(error))
-        except Exception as error:
-            if warn:
-                logging.warning('Unable to create directory %s: %s', dir_path, str(error))
+            os.chmod(dir_path, dirmode(chmod))
+        except PermissionError as e:
+            logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
+
+    if owner and not owner.is_self:
+        try:
+            os.chown(dir_path, owner.uid, owner.gid)
+        except PermissionError as e:
+            logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
 
 
-def open_file(file_path, mode='r', chmod=0o640, warn=True):
+def open_file(file_path, mode='r', chmod=0o640, owner: FileOwner = None):
     def opener(path, flags):
         return os.open(path, flags, mode=chmod)
 
     if (('w' in mode) or ('a' in mode)) and isinstance(file_path, str):
-        makedir(os.path.dirname(file_path), chmod=chmod, warn=warn)
+        makedir(os.path.dirname(file_path), chmod=chmod, owner=owner)
     return open(file_path, mode, opener=opener)
 
 
-FileOwner = collections.namedtuple('FileOwner', ('uid', 'gid', 'is_self'))
-
-
-def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner: FileOwner = None, timestamp=None):
-    if os.path.isfile(old_file_path):
-        makedir(os.path.dirname(new_file_path), chmod)
-        os.rename(old_file_path, new_file_path)
-        if chmod:
-            try:
-                os.chmod(new_file_path, chmod)
-            except PermissionError as error:
-                logging.warning('Unable to set file mode for "%s": %s', new_file_path, str(error))
-        if timestamp:
-            try:
-                os.utime(new_file_path, (timestamp, timestamp))
-            except PermissionError as error:
-                logging.warning('Unable to set file time for "%s": %s', new_file_path, str(error))
-        if owner and not owner.is_self:
-            try:
-                os.chown(new_file_path, owner.uid, owner.gid)
-            except PermissionError as error:
-                logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner.uid, owner.gid, str(error))
-        return new_file_path
-    return None
+def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner: FileOwner = None, timestamp=None) -> str:
+    makedir(os.path.dirname(new_file_path), chmod, owner)
+    os.rename(old_file_path, new_file_path)
+    if chmod:
+        try:
+            os.chmod(new_file_path, chmod)
+        except PermissionError as error:
+            logging.warning('Unable to set file mode for "%s": %s', new_file_path, str(error))
+    if timestamp:
+        try:
+            os.utime(new_file_path, (timestamp, timestamp))
+        except PermissionError as error:
+            logging.warning('Unable to set file time for "%s": %s', new_file_path, str(error))
+    if owner and not owner.is_self:
+        try:
+            os.chown(new_file_path, owner.uid, owner.gid)
+        except PermissionError as error:
+            logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner.uid, owner.gid, str(error))
+    return new_file_path
 
 
 def archive_file(file_type, file_path: str, archive_dir: str, archive_date: datetime.datetime) -> Optional[Tuple[str, str]]:
@@ -206,29 +214,34 @@ def commit_file_transactions(file_transactions: Iterable[FileTransaction], archi
 
             file = rename_file(file_transaction.temp_file_path, file_transaction.file_path,
                                chmod=file_transaction.chmod, owner=file_transaction.owner, timestamp=file_transaction.timestamp)
-            if file:
-                committed_files.append(file)
+            committed_files.append(file)
             log.debug(" - %s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
-    except Exception as error:  # restore any archived files
+    except Exception as e:  # restore any archived files
         log.error('File transaction error. Rolling back changes')
         for committed_file_path in committed_files:
-            if committed_file_path:
+            try:
                 os.remove(committed_file_path)
-                log.debug(' - removing %s', committed_file_path)
+                log.debug(' - %s removed', committed_file_path)
+            except FileNotFoundError:
+                pass
         for original_file_path, archived_file_path in archived_files:
-            if original_file_path:
+            try:
                 os.rename(archived_file_path, original_file_path)
-                log.debug(' - restoring %s', original_file_path)
-        raise error
+                log.debug(' - %s restored', original_file_path)
+            except FileNotFoundError:
+                log.warning(" - %s restoration failed", original_file_path)
+        raise e
 
 
 class Hooks(object):
 
-    def __init__(self):
+    def __init__(self, commands: dict):
         self._hooks = OrderedDict()
+        self._commands = commands
 
     # Hook Management
-    def add(self, hook_name: str, hooks, **kwargs):
+    def add(self, hook_name: str, **kwargs):
+        hooks = self._commands[hook_name]
         if not hooks:
             return
 
@@ -248,8 +261,8 @@ class Hooks(object):
                     hook = hook.copy()
                 hook['args'] = [arg.format(**kwargs) for arg in hook['args']]
                 self._hooks[hook_name].append(hook)
-        except KeyError as error:
-            log.warning('Invalid hook specification for %s, unknown key %s', hook_name, error)
+        except KeyError as e:
+            log.warning('Invalid hook specification for %s, unknown key %s', hook_name, e)
 
     def call(self):
         for hook_name, hooks in self._hooks.items():
@@ -266,6 +279,37 @@ class Hooks(object):
 
     def _clear_hooks(self):
         self._hooks.clear()
+
+
+# SCT Support
+SCTLog = collections.namedtuple('SCTLog', ('name', 'id', 'url'))
+SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
+
+
+def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]) -> SCTData:
+    certificates = ([base64.b64encode(certificate.encode(pem=False)).decode('ascii')]
+                    + [base64.b64encode(chain_certificate.encode(pem=False)).decode('ascii') for chain_certificate in chain])
+    request_data = json.dumps({'chain': certificates}).encode('ascii')
+    req = urllib.request.Request(url=ct_log.url + '/ct/v1/add-chain', data=request_data)
+    req.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(req) as response:
+            sct = json.loads(response.read().decode('utf-8'))
+
+            sid = sct.get('id')
+            ext = sct.get('extensions')
+            sign = sct.get('signature')
+            return SCTData(sct.get('sct_version'), base64.b64decode(sid) if sid else None, sct.get('timestamp'),
+                           base64.b64decode(ext) if ext else None, base64.b64decode(sign) if sign else None)
+    except urllib.error.HTTPError as e:
+        if (400 <= e.code) and (e.code < 500):
+            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)\n%s', ct_log.name, e.code, e.reason, e.read())
+        else:
+            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)', ct_log.name, e.code, e.reason)
+    except urllib.error.URLError as e:
+        log.warning('Unable to retrieve SCT from log %s: %s', ct_log.name, e.reason)
+    except Exception as e:
+        log.warning('Unable to retrieve SCT from log %s: %s', ct_log.name, str(e))
 
 
 def process_running(pid_file_path):

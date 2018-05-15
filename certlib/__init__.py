@@ -1,7 +1,7 @@
-# acmebot module
+# certlib module
 import logging
 
-log = logging.getLogger("acmebot")
+log = logging.getLogger("certmgr")
 
 SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 

@@ -8,7 +8,6 @@
         "color_output": true,
         "key_size": 4096,
         "key_curve": "secp384r1",
-        "key_cipher": "blowfish",
         "key_passphrase": null,
         "dhparam_size": 2048,
         "ecparam_curve": "secp384r1",
@@ -29,8 +28,8 @@
     },
     "directories": {
         "pid": "/var/run",
-        "log": "/var/log/acmebot",
-        "resource": "/var/local/acmebot",
+        "log": "/var/log/certmgr",
+        "resource": "/var/local/certmgr",
         "private_key": "/etc/ssl/private",
         "full_key": "/etc/ssl/private",
         "certificate": "/etc/ssl/certs",
@@ -44,7 +43,7 @@
         "temp": null
     },
     "file_names": {
-        "log": "acmebot.log",
+        "log": "certmgr.log",
         "private_key": "{name}{suffix}.key",
         "full_key": "{name}_full{suffix}.key",
         "certificate": "{name}{suffix}.pem",
@@ -151,7 +150,6 @@
             "key_types": ["rsa", "ecdsa"],
             "key_size": 4096,
             "key_curve": "secp384r1",
-            "key_cipher": "blowfish",
             "key_passphrase": null,
             "ocsp_must_staple": false,
             "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
