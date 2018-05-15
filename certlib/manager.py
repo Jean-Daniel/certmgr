@@ -458,6 +458,7 @@ class AcmeManager(object):
                             action='store_true', dest='no_auth', default=False,
                             help='Assume all domain names are already verified and do not perform any authorization')
 
+        # argparser.set_default_subparser('update')
         # action.add_argument('--fast-dhparams',
         #                        action='store_true', dest='fast_dhparams', default=False,
         #                        help='Using 2ton.com.au online generator to get dhparams instead of generating them locally')
@@ -468,6 +469,8 @@ class AcmeManager(object):
         #
 
         self.args = argparser.parse_args()
+        if not getattr(self.args, 'cls', None):
+            self.args = argparser.parse_args(sys.argv[1:] + ['update'])
 
         # reset root logger
         for handler in list(log.handlers):

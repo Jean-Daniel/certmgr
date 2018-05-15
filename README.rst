@@ -65,6 +65,7 @@ This tool can automatically register your certificates with multiple certificate
 The retrieved SCTs are suitable to be deilvered via a TLS extension,
 SCT TLS extension modules are available for `Apache <https://httpd.apache.org/docs/trunk/mod/mod_ssl_ct.html>`_ and `Nginx <https://github.com/grahamedgecombe/nginx-ct>`_.
 
+Note that this is not very usefull as letsencrypt generated certificates already contains SCT extensions.
 
 OCSP Response File Support
 --------------------------
@@ -81,7 +82,7 @@ Only OCSP responses with a "good" status will be stored.
 Encrypted Private Keys
 ----------------------
 
-Primary and backup private keys can optionally be encrypted using a passphrase and cipher of your choice.
+Primary and backup private keys can optionally be encrypted using a passphrase.
 
 
 Configurable Output File Names
@@ -106,17 +107,17 @@ This tool can automatically connect to configured servers and verify that the ge
 Additional checks are made for OSCP staples.
 
 
-ACME Protocol V1 and V2 Support
+ACME Protocol V2 Support
 -------------------------------
 
-This tool supports services running both ACME V1 and ACME V2 APIs.
-Wildcard certrificates may be issued when using the V2 API.
+This tool supports only ACME V2 APIs.
+Wildcard certificates may be issued when using the V2 API (but it requires DNS challenge which is not supported by this tool).
 
 
 Installation
 ============
 
-Requires Python 3.4+ and the acme and py3dns packages.
+Requires Python 3.5+ and the acme and py3dns packages.
 
 On Debian Jessie, these can be installed via::
 
@@ -138,14 +139,6 @@ By default, debug level output will be written to a log file.
 A configuration file for logrotate is provided in the logrotate.d directory,
 you may want to copy, or create a link to this file in /etc/logrotate.d.
 
-Note that when using dns-01 authorizations via a local DNS server,
-this tool needs to be able to add, remove, and update DNS records.
-This can be achieved by installing it on your master DNS server and using `bindtool`_ to manage the zone file,
-or you can use a custom shell script to update the DNS records.
-
-When using dns-01 authorizations via a remote server,
-an update key allowing the creation and deletion of TXT and optionally TLSA record types is required.
-
 Optional: some services require a full certificate chain including the root (OSCP stapling on Nginx, for example).
 In order to generate these files,
 place a copy of the root certificates from your certificate authority of choice in the same directory as the configuration file with the file names ``root_cert.rsa.pem`` and ``root_cert.ecdsa.pem`` for RSA and ECDSA certificate roots respectively.
@@ -154,17 +147,6 @@ and may not necessarily be of the same type,
 e.g. Let's Encrypt currently signs ECDSA certificates with an RSA root.
 If your certificate authority uses RSA certificate to sign ECDSA certificates types, place that RSA root certificate in ``root_cert.ecdsa.pem``.
 The root certificate for Let's Encrypt can be obtained `here <https://letsencrypt.org/certificates/>`_.
-
-
-Upgrade
-=======
-
-Starting with version 2.0.0 of this tool, the Let's Encrypt ACME V2 API is used by default.
-When upgrading to version 2.0.0+, or otherwise changing API endpoints,
-the client key is regenerated and a new registration is performed.
-If running in master/follower mode, be sure to run the tool on the master first,
-then copy the new client key and registration files to the followers before running on the followers.
-Existing private keys and certificates may continue to be used.
 
 
 Quick Start
@@ -211,12 +193,7 @@ The host name ``"@"`` is used for the name of the zone itself.
 Authorization Setup
 -------------------
 
-By default, the tool will attempt dns-01 domain authorizations for every alternative name specified,
-using local DNS updates.
-See the later sections on configuring `local <#configuring-local-dns-updates>`_ or `remote <#configuring-remote-dns-updates>`_ DNS updates.
-
-To use http-01 authorizations instead,
-configure the ``http_challenges`` section of the configuration file specifying a challenge directory for each fully qualified host name.
+The tool supports only http-01 authorizations which requires to configure an ``http_challenges`` section of the configuration file specifying a challenge directory for each fully qualified host name.
 
 For example::
 
@@ -234,11 +211,10 @@ See the `HTTP Challenges <#http-challenges>`_ section for more information.
 First Run
 ---------
 
-Once the configuration file is in place,
-simply execute the tool.
+Once the configuration file is in place, simply execute the tool.
 For the first run you may wish to select detailed output to see exactly what the tool is doing::
 
-    acmebot --detail
+    acmebot --debug
 
 If all goes well,
 the tool will generate a public/private key pair used for client authentication to the certificate authority,
@@ -465,13 +441,9 @@ Settings
 Various settings for the tool.
 All of these need only be present when the desired value is different from the default.
 
-* ``follower_mode`` specifies if the tool should run in master or follower mode.
-  The defalt value is ``false`` (master mode).
-  The master will obtain authorizations and issue certificates,
-  a follower will not attempt to obtain authorizations but can issue certificates.
 * ``log_level`` specifies the amount of information written into the log file.
-  Possible values are ``null``, ``"normal"``, ``"verbose"``, ``"debug"``, and ``"detail"``.
-  ``"verbose"``, ``"debug"``, and ``"detail"`` settings correlate to the ``--verbose``, ``--debug`` and ``--detail`` command-line options.
+  Possible values are ``null``, ``"normal"``, ``"verbose"``, ``"debug"``.
+  ``"verbose"``, ``"debug"`` settings correlate to the ``--verbose`` and ``--debug`` command-line options.
 * ``color_output`` specifies if the output should be colorized.
   Colorized output will be suppressed on non-tty devices.
   This option may be overridden via command line options.
@@ -537,7 +509,6 @@ Example::
     {
         ...
         "settings": {
-            "follower_mode": false,
             "log_level": "debug",
             "key_size": 4096,
             "key_curve": "secp384r1",
@@ -572,6 +543,8 @@ All of these need only be present when the desired value is different from the d
   The default value is ``"/var/run"``.
 * ``log`` specifies the directory to store the log file.
   The default value is ``"/var/log/acmebot"``.
+* ``link`` specifies the root directory for per domain name directory structure.
+  It defaults to ```null`` which means do not create symlinks.
 * ``resource`` specifies the directory to store the client key and registration files for the ACME account.
   The default value is ``"/var/local/acmebot"``.
 * ``private_key`` specifies the directory to store primary private key files.
@@ -612,6 +585,7 @@ Example::
         "directories": {
             "pid": "/var/run",
             "log": "/var/log/acmebot",
+            "link": "/var/lib/acmebot",
             "resource": "/var/local/acmebot",
             "private_key": "/etc/ssl/private",
             "full_key": "/etc/ssl/private",
@@ -725,7 +699,7 @@ The name of each certificate is used as the name of the certificate files.
 * ``ocsp_must_staple`` specifies if the OCSP Must-Staple extension is added to certificates.
   The default value is the value specified in the ``settings`` section.
 * ``ocsp_responder_urls`` specifies the list of OCSP responders to use if a certificate doesn't provide them.
-  The default value is the value specified in the ``settings`` section.
+  The default value is the value specified in the ``settings`` section. If set to empty list, it disables OCSP for taht certificate.
 * ``ct_submit_logs`` specifies the list of certificate transparency logs to submit the certificate to.
   The default value is the value specified in the ``settings`` section.
   The value ``["google_testtube"]`` can be used with the Let's Encrypt staging environment for testing.
@@ -762,15 +736,9 @@ Example::
 HTTP Challenges
 ---------------
 
-By default, the tool will attempt dns-01 domain authorizations for every alternative name specified,
-using local or remote DNS updates.
-
-To use http-01 authorizations instead,
+This tool uses http-01 authorizations that requires to
 configure the ``http_challenges`` section of the configuration file specifying a challenge directory for each fully qualified domain name,
 or configure a ``http_challenge`` directory.
-
-It is possible to mix usage of dns-01 and http-01 domain authorizations on a host by host basis,
-simply specify a http challenge directory only for those hosts requiring http-01 authentication.
 
 Example::
 
@@ -790,7 +758,7 @@ files placed in ``/var/www/htdocs/.well-known/acme-challenge`` must be publicly 
 and
 ``http://www.example.com/.well-known/acme-challenge/file-name``
 
-Alternatively, if your are primarily using http-01 authorizations and all challenge directories have a similar path,
+Alternatively, if all challenge directories have a similar path,
 you may configure a single ``http_challenge`` directory using a python format string with the fields ``zone``, ``host``, and ``fqdn``.
 
 Example::
@@ -802,11 +770,6 @@ Example::
         },
         ...
     }
-
-If an ``http_challenge`` directory is configured,
-all domain authorizations will default to http-01.
-To use dns-01 authorizations for selected domain names,
-add an ``http_challenges`` entry configured with a ``null`` value.
 
 
 File Name Patterns
@@ -1027,7 +990,7 @@ Example cron entry, in file /etc/cron.d/acmebot::
 
     MAILTO=admin@example.com
 
-    20 0 * * * root /usr/local/bin/acmebot --randomwait
+    20 0 * * * root /usr/local/bin/acmebot --randomwait update
 
 This will run the tool as root every day at 20 minutes past midnight plus a random delay of five minutes to an hour.
 Any output will be mailed to admin@example.com.
@@ -1036,7 +999,7 @@ If using OCSP response files, it may be desirable to refresh OCSP responses at a
 (Currently Let's Encrypt updates OCSP responses every three days.)
 To refresh OCSP responses every six hours, add the line:
 
-    20 6,12,18 * * * root /usr/local/bin/acmebot --ocsp --randomwait
+    20 6,12,18 * * * root /usr/local/bin/acmebot --randomwait update --ocsp
 
 
 Output Options
@@ -1060,7 +1023,7 @@ Forced Certificate Renewal
 Normally certificates will be automatically renewed when the tool is run within the certificate renewal window,
 e.g. within ``renewal_days`` of the certificate's expiration date.
 To cause certificates to be renewed before this time,
-run the tool with the ``--renew`` option on the command line.
+run the tool with the ``--force`` option on the command line.
 
 
 Revoking Certificates
@@ -1068,7 +1031,7 @@ Revoking Certificates
 
 Should it become necessary to revoke a certificate,
 for example if it is believed that the private key has been compromised,
-run the tool with the ``--revoke`` option on the command line.
+run the tool with the ``revoke`` option on the command line.
 
 When revoking certificates, as a safety measure,
 it is necessary to also specify the name of the private key (or keys) that should be revoked.
@@ -1083,13 +1046,13 @@ any revoked certificates that are still configured will automatically perform a 
 Authorization Only
 ------------------
 
-Use of the ``--auth`` option on the command line will limit the tool to only performing domain authorizations.
+Use of the ``auth`` option on the command line will limit the tool to only performing domain authorizations.
 
 
 Certificates Only
 -----------------
 
-Use of the ``--certs`` option on the command line will limit the tool to only issuing and renewing certificates and keys,
+Use of the ``update --certs`` option on the command line will limit the tool to only issuing and renewing certificates and keys,
 and updating related files such as Diffie-Hellman paramaters and HPKP headers.
 
 
@@ -1097,27 +1060,19 @@ and updating related files such as Diffie-Hellman paramaters and HPKP headers.
 Signed Certificate Timestamp Updates
 ------------------------------------
 
-Use of the ``--sct`` option on the command line will limit the tool to only verifying and updating configured Signed Certificate Timestamp files.
+Use of the ``update --sct`` option on the command line will limit the tool to only verifying and updating configured Signed Certificate Timestamp files.
 
 
 OCSP Response Updates
 ---------------------
 
-Use of the ``--ocsp`` option on the command line will limit the tool to only updating configured OCSP response files.
+Use of the ``update --ocsp`` option on the command line will limit the tool to only updating configured OCSP response files.
 
 
 Certificate Installation Verification
 -------------------------------------
 
-Use of the ``--verify`` option on the command line will limit the tool to only performing certificate installation verification.
-
-
-Multiple Operations
--------------------
-
-The ``--auth``, ``--certs``, ``--tlsa``, ``--sct``, ``-ocsp``, and ``--verify`` options may be combined to perform a combinations of operations.
-If none of these options are specified, all operations will be performed as necessary and configured.
-The order of the operations will not be affected by the order of the command line options.
+Use of the ``verify`` option on the command line will limit the tool to only performing certificate installation verification.
 
 
 Private Key Encryption

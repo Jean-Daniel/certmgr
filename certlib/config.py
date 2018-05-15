@@ -181,7 +181,7 @@ class FileManager(object):
         'sct': '{ct_log_name}.sct'
     }
 
-    def __init__(self, base: str, directories, filenames):
+    def __init__(self, base: str, directories, filenames, http_challenges):
         for key, dirpath in directories.items():
             if not dirpath:
                 continue
@@ -205,6 +205,7 @@ class FileManager(object):
 
         self._directories = directories
         self._filenames = filenames
+        self._challenges = http_challenges
 
     def filename(self, file_type: str) -> Optional[str]:
         return self._filenames.get(file_type)
@@ -226,6 +227,10 @@ class FileManager(object):
         return os.path.join(archive, name) if archive else None
 
     def http_challenge_directory(self, domain_name: str) -> Optional[str]:
+        challenge_dir = self._challenges.get(domain_name)
+        if challenge_dir:
+            return challenge_dir
+
         http_challenge_directory = self.directory('http_challenge')
         if http_challenge_directory and '{' in http_challenge_directory:
             http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
@@ -340,12 +345,11 @@ class Configuration(object):
                 # check later when logger ready
                 _merge('file_names', filenames, values, check=False)
 
-            filemgr = FileManager(os.path.dirname(cfg.path), directories, filenames)
+            filemgr = FileManager(os.path.dirname(cfg.path), directories, filenames, data.get('http_challenges') or {})
             configure_logger(level, filemgr)
 
             sct_logs = dict(_DEFAULT_CT_LOGS)
             for section, values in data.items():
-                # TODO: http_challenges
                 if section == 'account':
                     _merge('account', cfg.account, values)
                 elif section == 'settings':
@@ -363,6 +367,8 @@ class Configuration(object):
                 elif section == 'ct_logs':
                     _merge('ct_logs', sct_logs, values, check=False)
                 elif section == 'certificates':
+                    pass
+                elif section == 'http_challenges':
                     pass
                 else:
                     log.warning('[config] unknown section name: "%s"', section)
