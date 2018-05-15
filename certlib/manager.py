@@ -311,7 +311,7 @@ class UpdateAction(Action):
                 sct_data, updated = item.sct(ct_log)
                 if not updated:
                     continue
-                trx = item.save_sct(ct_log.name, owner)
+                trx = item.save_sct(ct_log, owner)
                 if trx:
                     transactions.append(trx)
                     hooks.add('sct_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path, ct_log_name=ct_log.name)

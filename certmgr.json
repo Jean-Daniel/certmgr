@@ -21,7 +21,7 @@
     ],
     "renewal_days": 30,
     "max_authorization_attempts": 2,
-    "acme_directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory",
+    "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory",
     "verify": [ 443 ]
   },
   "directories": {
@@ -118,15 +118,15 @@
   "certificates": {
     "jddupas": {
       "common_name": "jddupas.xooloo.io",
-      "alt_names": {
-        "xooloo.io": [
-          "jddupas",
-          "acme.jddupas"
-        ]
-      },
       "ct_submit_logs": null
     },
     "acme2.jddupas.xooloo.io": {
+      "alt_names": {
+        "xooloo.io": [
+          "acme.jddupas",
+          "acme2.jddupas"
+        ]
+      }
     }
   }
 }

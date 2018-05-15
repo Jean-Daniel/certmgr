@@ -1,3 +1,4 @@
+import base64
 import grp
 import json
 import logging
@@ -143,7 +144,7 @@ class CertificateSpec(object):
         for ct_log_name in get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
             ct_log = ct_logs.get(ct_log_name)
             if ct_log:
-                self.ct_submit_logs.append(SCTLog(ct_log_name, ct_log['id'], ct_log['url']))
+                self.ct_submit_logs.append(SCTLog(ct_log_name, base64.b64decode(ct_log['id']), ct_log['url']))
             else:
                 log.warning("[config] certificate '%s' specify undefined ct_log '%s'", name, ct_log_name)
 

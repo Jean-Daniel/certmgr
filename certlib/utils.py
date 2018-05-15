@@ -299,8 +299,8 @@ def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]
             sid = sct.get('id')
             ext = sct.get('extensions')
             sign = sct.get('signature')
-            return SCTData(sct.get('sct_version'), base64.b64decode(sid) if sid else None, sct.get('timestamp'),
-                           base64.b64decode(ext) if ext else None, base64.b64decode(sign) if sign else None)
+            return SCTData(sct.get('sct_version'), base64.b64decode(sid) if sid else b'', sct.get('timestamp'),
+                           base64.b64decode(ext) if ext else b'', base64.b64decode(sign) if sign else None)
     except urllib.error.HTTPError as e:
         if (400 <= e.code) and (e.code < 500):
             log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)\n%s', ct_log.name, e.code, e.reason, e.read())
