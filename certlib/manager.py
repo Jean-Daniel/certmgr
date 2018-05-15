@@ -324,12 +324,12 @@ class UpdateAction(Action):
                 raise AcmeError('[{}] Unable to install keys and certificates', context.name) from e
 
     def finalize(self):
-        linker = actions.LinkAction(self.config, self.fs, self.args, None)
+        linker = actions.LinkAction(self.config, self.fs, self.args)
         for context in self._done:
             try:
                 linker.run(context.spec)
             except AcmeError as e:
-                log.error("[%s] links update error: %s", context.name, str(e))
+                log.error("[%s] symlinks update error: %s", context.name, str(e))
 
         # Call hook usefull to sync status with other hosts
         updated = [context.name for context in self._done if context.updated]
@@ -411,7 +411,7 @@ class AcmeManager(object):
 
         subparsers = argparser.add_subparsers(description='acmetool subcommand', dest='action')
 
-        action = subparsers.add_parser('check', help='check installed files permissions')
+        action = subparsers.add_parser('check', help='check installed files permissions and symlinks')
         action.add_argument('certificate_names', nargs='*')
         action.set_defaults(cls=actions.CheckAction)
 
@@ -422,10 +422,6 @@ class AcmeManager(object):
         action = subparsers.add_parser('auth', help='perform domain authentification')
         action.add_argument('certificate_names', nargs='*')
         action.set_defaults(cls=actions.AuthAction)
-
-        action = subparsers.add_parser('link', help='update certificates symlinks')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.LinkAction)
 
         action = subparsers.add_parser('verify', help='verify installed certificates')
         action.add_argument('certificate_names', nargs='*')

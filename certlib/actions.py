@@ -38,10 +38,91 @@ class Action(metaclass=abc.ABCMeta):
         pass
 
 
-class CheckAction(Action):
+class LinkAction(Action):
     has_acme_client = False
 
-    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client):
+    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
+        super().__init__(config, fs, args, acme_client)
+        self.root = fs.directory('link')
+
+    def _process_symlink(self, name: str, target: str, link: str):
+        link_path = os.path.join(self.root, name, link)
+        if os.path.exists(target):
+            try:
+                if os.readlink(link_path) == target:
+                    return
+                os.remove(link_path)
+            except FileNotFoundError:
+                pass
+            log.debug("symlink '%s' -> '%s' created", link_path, target)
+            os.symlink(target, link_path)
+        else:
+            try:
+                os.remove(link_path)
+                log.debug("symlink '%s' removed", link_path)
+            except FileNotFoundError:
+                pass
+
+    def run(self, certificate: CertificateSpec):
+        if not self.root:
+            return
+
+        log.info('[%s] Update symlinks', certificate.name)
+
+        # Create main target directory
+        os.makedirs(os.path.join(self.root, certificate.common_name), mode=0o755, exist_ok=True)
+
+        target = self.fs.filepath('param', certificate.name)
+        self._process_symlink(certificate.common_name, target, 'params.pem')
+
+        for key_type in certificate.key_types:
+            # Private Keys
+            target = self.fs.filepath('private_key', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, key_type + '.key')
+
+            target = self.fs.filepath('full_key', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, 'full.' + key_type + '.key')
+
+            # Certificate
+            target = self.fs.filepath('certificate', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, 'cert.' + key_type + '.pem')
+
+            target = self.fs.filepath('chain', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, 'chain.' + key_type + '.pem')
+
+            target = self.fs.filepath('full_certificate', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, 'cert+root.' + key_type + '.pem')
+
+            # OCSP
+            target = self.fs.filepath('ocsp', certificate.name, key_type)
+            self._process_symlink(certificate.common_name, target, key_type + '.ocsp')
+
+            # SCT
+            for ct_log in certificate.ct_submit_logs:
+                target = self.fs.filepath('sct', certificate.name, key_type, ct_log_name=ct_log.name)
+                self._process_symlink(certificate.common_name, target, ct_log.name + '.' + key_type + '.sct')
+
+        # process directories links (alt names -> common name)
+        for name in certificate.alt_names:
+            if name == certificate.common_name:
+                continue
+            link_path = os.path.join(self.root, name)
+            if os.path.islink(link_path):
+                if os.readlink(link_path) != certificate.common_name:
+                    os.remove(link_path)
+                else:
+                    continue
+            elif os.path.isdir(link_path):
+                log.debug("removing existing directory")
+                shutil.rmtree(link_path)
+
+            os.symlink(certificate.common_name, link_path)
+            log.debug("symlink '%s' -> '%s' created", link_path, certificate.common_name)
+
+
+class CheckAction(LinkAction):
+
+    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
         super().__init__(config, fs, args, acme_client)
         self._owner = config.fileowner()
         self._checked = dict()
@@ -90,6 +171,9 @@ class CheckAction(Action):
 
             for ct_log in certificate.ct_submit_logs:
                 self._check_file(certificate.name, self.fs.filepath('sct', certificate.name, key_type, ct_log_name=ct_log.name), 0o644)
+
+        # check symlinks
+        super().run(certificate)
 
     def finalize(self):
         resource = self.fs.directory('resource')
@@ -146,86 +230,6 @@ class AuthAction(Action):
 
         handle_authorizations(order, self.fs, self.acme_client,
                               self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'))
-
-
-class LinkAction(Action):
-    has_acme_client = False
-
-    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client):
-        super().__init__(config, fs, args, acme_client)
-        self.root = fs.directory('link')
-
-    def process_symlink(self, name: str, target: str, link: str):
-        link_path = os.path.join(self.root, name, link)
-        if os.path.exists(target):
-            try:
-                if os.readlink(link_path) == target:
-                    return
-                os.remove(link_path)
-            except FileNotFoundError:
-                pass
-            log.debug("symlink '%s' -> '%s' created", link_path, target)
-            os.symlink(target, link_path)
-        else:
-            try:
-                os.remove(link_path)
-                log.debug("symlink '%s' removed", link_path)
-            except FileNotFoundError:
-                pass
-
-    def run(self, certificate: CertificateSpec):
-        if not self.root:
-            return
-
-        log.debug('Update symlinks for %s', certificate.name)
-
-        # Create main target directory
-        os.makedirs(os.path.join(self.root, certificate.common_name), mode=0o755, exist_ok=True)
-
-        target = self.fs.filepath('param', certificate.name)
-        self.process_symlink(certificate.common_name, target, 'params.pem')
-
-        for key_type in certificate.key_types:
-            # Private Keys
-            target = self.fs.filepath('private_key', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, key_type + '.key')
-
-            target = self.fs.filepath('full_key', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, 'full.' + key_type + '.key')
-
-            # Certificate
-            target = self.fs.filepath('certificate', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, 'cert.' + key_type + '.pem')
-
-            target = self.fs.filepath('chain', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, 'chain.' + key_type + '.pem')
-
-            target = self.fs.filepath('full_certificate', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, 'cert+root.' + key_type + '.pem')
-
-            # OCSP
-            target = self.fs.filepath('ocsp', certificate.name, key_type)
-            self.process_symlink(certificate.common_name, target, key_type + '.ocsp')
-
-            for ct_log in certificate.ct_submit_logs:
-                target = self.fs.filepath('sct', certificate.name, key_type, ct_log_name=ct_log.name)
-                self.process_symlink(certificate.common_name, target, ct_log.name + '.' + key_type + '.sct')
-
-        for name in certificate.alt_names:
-            if name == certificate.common_name:
-                continue
-            link_path = os.path.join(self.root, name)
-            if os.path.islink(link_path):
-                if os.readlink(link_path) != certificate.common_name:
-                    os.remove(link_path)
-                else:
-                    continue
-            elif os.path.isdir(link_path):
-                log.debug("removing existing directory")
-                shutil.rmtree(link_path)
-
-            os.symlink(certificate.common_name, link_path)
-            log.debug("symlink '%s' -> '%s' created", link_path, certificate.common_name)
 
 
 class VerifyAction(Action):
