@@ -102,6 +102,7 @@ class _Logger(logging.LoggerAdapter):
             self._file = None
         if path:
             self._file = logging.FileHandler(path, encoding='UTF-8')
+            self._file.setFormatter(_Formatter())
             self.logger.addHandler(self._file)
 
     def reset(self, color: bool):
