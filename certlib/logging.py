@@ -77,8 +77,8 @@ class _Logger(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         extra = kwargs.get('extra')
         if extra:
-            extra = dict(extra)
-            extra.update(self.extra)
+            kwargs["extra"] = dict(extra)
+            kwargs["extra"].update(self.extra)
         else:
             kwargs["extra"] = self.extra
         return msg, kwargs
