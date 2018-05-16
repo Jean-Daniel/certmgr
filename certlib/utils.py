@@ -134,6 +134,15 @@ class FileTransaction(object):
     def write(self, data):
         self.file.write(data)
 
+    def apply(self, archive_dir: str, archive_date: datetime.datetime):
+        pass
+
+    def revert(self):
+        pass
+
+    def cleanup(self):
+        pass
+
 
 def commit_file_transactions(file_transactions: Iterable[FileTransaction], archive_dir: Optional[str] = None):
     if not file_transactions:

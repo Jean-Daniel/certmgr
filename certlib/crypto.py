@@ -26,8 +26,9 @@ _SUPPORTED_CURVES = {
 
 class PrivateKey(metaclass=abc.ABCMeta):
 
-    def __init__(self, key: Union[rsa.RSAPrivateKeyWithSerialization, ec.EllipticCurvePrivateKeyWithSerialization]):
+    def __init__(self, key: Union[rsa.RSAPrivateKeyWithSerialization, ec.EllipticCurvePrivateKeyWithSerialization], encrypted: bool = False):
         self._key = key
+        self.encrypted = encrypted
 
     @property
     @abc.abstractmethod
@@ -96,10 +97,10 @@ class PrivateKey(metaclass=abc.ABCMeta):
             key = serialization.load_pem_private_key(key_pem, pwd, default_backend())
             if isinstance(key, rsa.RSAPrivateKey):
                 assert isinstance(key, rsa.RSAPrivateKeyWithSerialization)
-                return _RSAKey(key)
+                return _RSAKey(key, pwd is not None)
             if isinstance(key, ec.EllipticCurvePrivateKey):
                 assert isinstance(key, ec.EllipticCurvePrivateKeyWithSerialization)
-                return _ECDSAKey(key)
+                return _ECDSAKey(key, pwd is not None)
             raise NotImplementedError("Unsupported key type: " + key.__class__)
         except FileNotFoundError:
             return None

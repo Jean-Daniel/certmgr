@@ -305,6 +305,10 @@ class UpdateAction(Action):
                     transactions.append(trx)
                     # TODO: pass password to the hook ?
                     hooks.add('private_key_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+            else:
+                if not item.key.encrypted and item.spec.private_key.passphrase:
+                    # FIXME: rewrite private key and trash the existing file
+                    log.info("TODO: private key is not encrypted but should be")
 
             if item.ocsp_updated:
                 trx = item.save_ocsp(owner)
