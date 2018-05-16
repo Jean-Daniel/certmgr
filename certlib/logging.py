@@ -74,6 +74,15 @@ class _Logger(logging.LoggerAdapter):
         self._stream = None  # type: logging.StreamHandler
         self._file = None
 
+    def process(self, msg, kwargs):
+        extra = kwargs.get('extra')
+        if extra:
+            extra = dict(extra)
+            extra.update(self.extra)
+        else:
+            kwargs["extra"] = self.extra
+        return msg, kwargs
+
     def prefix(self, prefix: str):
         return swap(self.extra, 'prefix', self.extra['prefix'] + prefix)
 
