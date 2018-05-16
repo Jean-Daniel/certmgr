@@ -22,6 +22,8 @@ def verify_requirements():
         with open(requirements_file_path, 'r') as requirements_file:
             requirements = requirements_file.read()
             for requirement in requirements.split('\n'):
+                if requirement.startswith('#'):
+                    continue
                 if requirement:
                     package, comparison, version = (re.split('\s?(<?>?==?)\s?', requirement) + ['', ''])[:3]
                     try:

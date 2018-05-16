@@ -1,17 +1,15 @@
 import base64
 import datetime
-import json
 import logging
 import os
 import shlex
 import subprocess
 import tempfile
-import urllib
 from collections import OrderedDict
 from typing import Optional, Tuple, Iterable, List
-from urllib import request, error
 
 import collections
+import requests
 
 from .crypto import Certificate
 from .logging import log
@@ -233,25 +231,20 @@ SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'exte
 def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]) -> SCTData:
     certificates = ([base64.b64encode(certificate.encode(pem=False)).decode('ascii')]
                     + [base64.b64encode(chain_certificate.encode(pem=False)).decode('ascii') for chain_certificate in chain])
-    request_data = json.dumps({'chain': certificates}).encode('ascii')
-    req = urllib.request.Request(url=ct_log.url + '/ct/v1/add-chain', data=request_data)
-    req.add_header('Content-Type', 'application/json')
-    try:
-        with urllib.request.urlopen(req) as response:
-            sct = json.loads(response.read().decode('utf-8'))
 
+    req = requests.post(ct_log.url + '/ct/v1/add-chain', json={'chain': certificates})
+    try:
+        if req.status_code == 200:
+            sct = req.json()
             sid = sct.get('id')
             ext = sct.get('extensions')
             sign = sct.get('signature')
             return SCTData(sct.get('sct_version'), base64.b64decode(sid) if sid else b'', sct.get('timestamp'),
                            base64.b64decode(ext) if ext else b'', base64.b64decode(sign) if sign else None)
-    except urllib.error.HTTPError as e:
-        if (400 <= e.code) and (e.code < 500):
-            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)\n%s', ct_log.name, e.code, e.reason, e.read())
+        if 400 <= req.status_code < 500:
+            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)\n%s', ct_log.name, req.status_code, req.reason, req.content())
         else:
-            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)', ct_log.name, e.code, e.reason)
-    except urllib.error.URLError as e:
-        log.warning('Unable to retrieve SCT from log %s: %s', ct_log.name, e.reason)
+            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)', ct_log.name, req.status_code, req.reason)
     except Exception as e:
         log.warning('Unable to retrieve SCT from log %s: %s', ct_log.name, str(e))
 

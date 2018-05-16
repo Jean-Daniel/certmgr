@@ -1,7 +1,19 @@
-appdirs>=1.4.3
-pyparsing>=2.2.0
-packaging>=16.8
-pyOpenSSL>=17.5.0
-cryptography>=2.1.4
-asn1crypto>=0.24.0
-acme>=0.22.0
+acme==0.24.0
+josepy==1.1.0
+pyOpenSSL==17.5.0
+
+requests==2.18.4
+asn1crypto==0.24.0
+cryptography==2.2.2
+## The following requirements were added by pip freeze:
+certifi==2018.4.16
+cffi==1.11.5
+chardet==3.0.4
+idna==2.6
+mock==2.0.0
+pbr==4.0.3
+pycparser==2.18
+pyRFC3339==1.0
+pytz==2018.4
+six==1.11.0
+urllib3==1.22
