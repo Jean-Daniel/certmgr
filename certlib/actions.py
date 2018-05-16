@@ -118,6 +118,7 @@ def update_links(certificate: CertificateSpec, fs: FileManager):
 
 
 class CheckAction(Action):
+    has_acme_client = False
 
     def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
         super().__init__(config, fs, args, acme_client)
@@ -240,6 +241,7 @@ class AuthAction(Action):
 
 
 class VerifyAction(Action):
+    has_acme_client = False
 
     def run(self, certificate: CertificateSpec):
         log.info("Verify certificates")
