@@ -60,7 +60,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
     sock.settimeout(None)
 
 
-def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[OpenSSL.crypto.X509], OCSP]:
+def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[Certificate], OCSP]:
     sock = socket.socket(addr[0], socket.SOCK_STREAM)
     sock.connect(addr[4])
 
@@ -84,7 +84,7 @@ def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -
 
     ssl_sock.shutdown()
     ssl_sock.close()
-    return installed_certificates, ocsp
+    return [Certificate(installed_certificate.to_cryptography()) for installed_certificate in installed_certificates], ocsp
 
 
 def _verify_certificate_installation(item: CertificateItem, host_name: str, port_number: int, starttls: Optional[str], cipher_list,
@@ -115,8 +115,8 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                         installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
                         attempts += 1
 
-                installed_certificate = Certificate(installed_certificates[0].to_cryptography())
-                installed_chain = [Certificate(cert.to_cryptography()) for cert in installed_certificates[1:]]
+                installed_certificate = installed_certificates[0]
+                installed_chain = installed_certificates[1:]
                 if item.certificate == installed_certificate:
                     log.info('certificate present', extra={'color': 'green'})
                 else:
