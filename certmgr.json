@@ -127,6 +127,10 @@
           "acme2.jddupas"
         ]
       }
+    },
+    "mail": {
+      "common_name": "imap.xooloo.com",
+      "verify": [ 993 ]
     }
   }
 }

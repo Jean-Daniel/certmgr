@@ -1,6 +1,7 @@
 # Verify
 import socket
 import time
+from collections import OrderedDict
 from typing import Optional, Tuple, List
 
 import OpenSSL
@@ -78,13 +79,27 @@ def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -
     ssl_sock.request_ocsp()
     ssl_sock.do_handshake()
     ocsp = ssl_sock.get_app_data()
-    log.debug('Connected to %s, protocol %s, cipher %s, OCSP Staple %s', ssl_sock.get_servername(), ssl_sock.get_protocol_version_name(),
+    log.debug('Connected to %s, protocol %s, cipher %s, OCSP Staple %s', ssl_sock.get_servername().decode(), ssl_sock.get_protocol_version_name(),
               ssl_sock.get_cipher_name(), ocsp.response_status.upper() if ocsp else 'missing')
     installed_certificates = ssl_sock.get_peer_cert_chain()  # type: List[OpenSSL.crypto.X509]
 
     ssl_sock.shutdown()
     ssl_sock.close()
     return [Certificate(installed_certificate.to_cryptography()) for installed_certificate in installed_certificates], ocsp
+
+
+def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
+    if len(chain) == 1:
+        return chain
+
+    sanitized = OrderedDict()
+    for cert in chain:
+        if cert in sanitized:
+            log.warning("certificate chain contains duplicated certificate")
+        else:
+            sanitized[cert] = True
+
+    return list(sanitized.keys())
 
 
 def _verify_certificate_installation(item: CertificateItem, host_name: str, port_number: int, starttls: Optional[str], cipher_list,
@@ -116,7 +131,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                         attempts += 1
 
                 installed_certificate = installed_certificates[0]
-                installed_chain = installed_certificates[1:]
+                installed_chain = _validate_chain(installed_certificates[1:])
                 if item.certificate == installed_certificate:
                     log.info('certificate present', extra={'color': 'green'})
                 else:

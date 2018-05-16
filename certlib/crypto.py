@@ -139,6 +139,9 @@ class Certificate(object):
     def __init__(self, cert: x509.Certificate):
         self._cert = cert
 
+    def __hash__(self):
+        return self._cert.__hash__()
+
     def __eq__(self, other):
         if not isinstance(other, Certificate):
             return False
