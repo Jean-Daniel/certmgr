@@ -1,7 +1,4 @@
 # certlib module
-import logging
-
-log = logging.getLogger("certmgr")
 
 SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 

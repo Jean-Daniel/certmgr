@@ -14,8 +14,9 @@ from acme import messages, client
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from . import AcmeError, log
+from . import AcmeError
 from .config import FileManager
+from .logging import log
 from .utils import open_file, makedir, FileTransaction, commit_file_transactions
 
 

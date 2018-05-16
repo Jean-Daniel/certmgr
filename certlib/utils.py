@@ -1,10 +1,8 @@
 import base64
 import datetime
-import grp
 import json
 import logging
 import os
-import pwd
 import shlex
 import subprocess
 import tempfile
@@ -15,66 +13,8 @@ from urllib import request, error
 
 import collections
 
-from . import log
 from .crypto import Certificate
-
-
-class ColorFormatter(logging.Formatter):
-    _color_codes = {
-        'black': 30,
-        'red': 31,
-        'green': 32,
-        'yellow': 33,
-        'blue': 34,
-        'magenta': 35,
-        'cyan': 36,
-        'light gray': 37,
-        'dark gray': 90,
-        'light red': 91,
-        'light green': 92,
-        'light yellow': 93,
-        'light blue': 94,
-        'light magenta': 95,
-        'light cyan': 96,
-        'white': 97
-    }
-    _style_codes = {
-        'normal': 0,
-        'bold': 1,
-        'bright': 1,
-        'dim': 2,
-        'underline': 4,
-        'underlined': 4,
-        'blink': 5,
-        'reverse': 7,
-        'invert': 7,
-        'hidden': 8
-    }
-
-    def format(self, record: logging.LogRecord):
-        style = 'normal'
-        if hasattr(record, 'color'):
-            color = record.color
-        elif record.levelno >= logging.ERROR:
-            color = 'red'
-            style = 'bold'
-        elif record.levelno >= logging.WARNING:
-            color = 'yellow'
-        elif record.levelno >= logging.INFO:
-            color = 'dark gray'
-        else:
-            color = 'light gray'
-
-        msg = super().format(record)
-        return '\033[{style};{color}m{message}\033[0m'.format(color=self._color_codes[color], style=self._style_codes[style], message=msg)
-
-
-def get_user_id(user_name: str) -> int:
-    return pwd.getpwnam(user_name).pw_uid
-
-
-def get_group_id(group_name: str) -> int:
-    return grp.getgrnam(group_name).gr_gid
+from .logging import log
 
 
 def get_device_id(directory: str) -> int:
@@ -108,13 +48,15 @@ def dirmode(mode: int) -> int:
 
 
 def makedir(dir_path: str, chmod: int = None, owner: FileOwner = None):
-    os.makedirs(dir_path, exist_ok=True)
-    # try to guess dir mode for a file mode
-    if chmod:
-        try:
-            os.chmod(dir_path, dirmode(chmod))
-        except PermissionError as e:
-            logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
+    try:
+        os.makedirs(dir_path, dirmode(chmod))
+    except FileExistsError:
+        # try to guess dir mode for a file mode
+        if chmod:
+            try:
+                os.chmod(dir_path, dirmode(chmod))
+            except PermissionError as e:
+                logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
 
     if owner and not owner.is_self:
         try:
@@ -123,12 +65,12 @@ def makedir(dir_path: str, chmod: int = None, owner: FileOwner = None):
             logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
 
 
-def open_file(file_path, mode='r', chmod=0o640, owner: FileOwner = None):
+def open_file(file_path, mode='r', chmod=0o640):
     def opener(path, flags):
         return os.open(path, flags, mode=chmod)
 
     if (('w' in mode) or ('a' in mode)) and isinstance(file_path, str):
-        makedir(os.path.dirname(file_path), chmod=chmod, owner=owner)
+        makedir(os.path.dirname(file_path), chmod=chmod)
     return open(file_path, mode, opener=opener)
 
 
@@ -206,30 +148,32 @@ def commit_file_transactions(file_transactions: Iterable[FileTransaction], archi
     if archive_dir is None:
         archive_dir = FileTransaction.tempdir
     try:
-        archive_date = datetime.datetime.now()
-        for file_transaction in file_transactions:
-            archived_file = archive_file(file_transaction.file_type, file_transaction.file_path, archive_dir, archive_date)
-            if archived_file:
-                archived_files.append(archived_file)
+        with log.prefix(" - "):
+            archive_date = datetime.datetime.now()
+            for file_transaction in file_transactions:
+                archived_file = archive_file(file_transaction.file_type, file_transaction.file_path, archive_dir, archive_date)
+                if archived_file:
+                    archived_files.append(archived_file)
 
-            file = rename_file(file_transaction.temp_file_path, file_transaction.file_path,
-                               chmod=file_transaction.chmod, owner=file_transaction.owner, timestamp=file_transaction.timestamp)
-            committed_files.append(file)
-            log.debug(" - %s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
+                file = rename_file(file_transaction.temp_file_path, file_transaction.file_path,
+                                   chmod=file_transaction.chmod, owner=file_transaction.owner, timestamp=file_transaction.timestamp)
+                committed_files.append(file)
+                log.debug("%s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
     except Exception as e:  # restore any archived files
         log.error('File transaction error. Rolling back changes')
-        for committed_file_path in committed_files:
-            try:
-                os.remove(committed_file_path)
-                log.debug(' - %s removed', committed_file_path)
-            except FileNotFoundError:
-                pass
-        for original_file_path, archived_file_path in archived_files:
-            try:
-                os.rename(archived_file_path, original_file_path)
-                log.debug(' - %s restored', original_file_path)
-            except FileNotFoundError:
-                log.warning(" - %s restoration failed", original_file_path)
+        with log.prefix(" - "):
+            for committed_file_path in committed_files:
+                try:
+                    os.remove(committed_file_path)
+                    log.debug('%s removed', committed_file_path)
+                except FileNotFoundError:
+                    pass
+            for original_file_path, archived_file_path in archived_files:
+                try:
+                    os.rename(archived_file_path, original_file_path)
+                    log.debug('%s restored', original_file_path)
+                except FileNotFoundError:
+                    log.warning("%s restoration failed", original_file_path)
         raise e
 
 

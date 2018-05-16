@@ -4,12 +4,12 @@ import time
 from typing import Optional, Tuple, List
 
 import OpenSSL
-from asn1crypto import ocsp as asn1_ocsp
 
-from . import log, AcmeError
+from . import AcmeError
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate
-from .ocsp import ocsp_response_status
+from .logging import log
+from .ocsp import OCSP
 
 
 def _send_starttls(ty: str, sock: socket.socket, host_name: str):
@@ -48,7 +48,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
         buffer = sock.recv(4096)
         log.debug('SIEVE: %s', buffer)
         if b'"STARTTLS"' not in buffer:
-            sock.shutdown()
+            sock.shutdown(socket.SHUT_RDWR)
             sock.close()
             raise AcmeError('STARTTLS not supported on server')
         sock.send(b'StartTls\r\n')
@@ -60,7 +60,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
     sock.settimeout(None)
 
 
-def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[OpenSSL.crypto.X509], asn1_ocsp.OCSPResponse]:
+def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[OpenSSL.crypto.X509], OCSP]:
     sock = socket.socket(addr[0], socket.SOCK_STREAM)
     sock.connect(addr[4])
 
@@ -68,7 +68,7 @@ def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -
         _send_starttls(starttls, sock, host_name)
 
     def _process_ocsp(conn: OpenSSL.SSL.Connection, ocsp_data, data):
-        conn.set_app_data(asn1_ocsp.OCSPResponse.load(ocsp_data) if (b'' != ocsp_data) else None)
+        conn.set_app_data(OCSP.decode(ocsp_data) if ocsp_data else None)
         return True
 
     ssl_context.set_ocsp_client_callback(_process_ocsp)
@@ -79,7 +79,7 @@ def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -
     ssl_sock.do_handshake()
     ocsp = ssl_sock.get_app_data()
     log.debug('Connected to %s, protocol %s, cipher %s, OCSP Staple %s', ssl_sock.get_servername(), ssl_sock.get_protocol_version_name(),
-              ssl_sock.get_cipher_name(), ocsp_response_status(ocsp).upper() if ocsp else 'missing')
+              ssl_sock.get_cipher_name(), ocsp.response_status.upper() if ocsp else 'missing')
     installed_certificates = ssl_sock.get_peer_cert_chain()  # type: List[OpenSSL.crypto.X509]
 
     ssl_sock.shutdown()
@@ -97,53 +97,50 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
             host_name = 'wildcard-test.' + host_name[2:]
         addr_info = socket.getaddrinfo(host_name, port_number, proto=socket.IPPROTO_TCP)
     except Exception as error:
-        log.error('[%s:%s] VALIDATION ERROR: Unable to get address for %s: %s',
-                  item.name, item.type.upper(), host_name, str(error))
+        log.error('Unable to get "%s" address: %s', host_name, str(error))
         return
 
     for addr in addr_info:
-        host_desc = host_name + ' at ' + (('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0]) + ':' + str(port_number)
-        try:
-            log.debug('Connecting to %s with %s ciphers', host_desc, item.type.upper())
-            installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
-            if item.certificate.has_oscp_must_staple:
-                attempts = 1
-                while (not ocsp_staple) and (attempts < max_ocsp_verify_attempts):
-                    time.sleep(ocsp_verify_retry_delay)
-                    log.debug('Retry to fetch OCSP staple')
-                    installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
-                    attempts += 1
-
-            installed_certificate = Certificate(installed_certificates[0].to_cryptography())
-            installed_chain = [Certificate(cert.to_cryptography()) for cert in installed_certificates[1:]]
-            if item.certificate == installed_certificate:
-                log.info('[%s:%s] certificate present on %s', item.name, item.type.upper(), host_desc, extra={'color': 'green'})
-            else:
-                log.error('[%s:%s] VALIDATION ERROR: certificate %s mismatch on %s', item.name, item.type.upper(), installed_certificate.common_name, host_desc)
-            if len(item.chain) != len(installed_chain):
-                log.error('[%s:%s] VALIDATION ERROR: certificate chain length mismatch on %s, got %s intermediate(s), expected %s',
-                          item.name, item.type.upper(), host_desc, len(installed_chain), len(item.chain))
-            else:
-                for intermediate, installed_intermediate in zip(item.chain, installed_chain):
-                    if intermediate == installed_intermediate:
-                        log.info('[%s:%s] Intermediate certificate "%s" present on %s',
-                                 item.name, item.type.upper(), intermediate.common_name, host_desc, extra={'color': 'green'})
-                    else:
-                        log.error('[%s:%s] VALIDATION ERROR: Intermediate certificate "%s" mismatch on %s',
-                                  item.name, item.type.upper(), installed_intermediate.common_name, host_desc)
-            if ocsp_staple:
-                log.debug('Verify OCSP response status')
-                ocsp_status = ocsp_response_status(ocsp_staple)
-                if 'good' == ocsp_status.lower():
-                    log.info('OCSP staple status is GOOD on %s', host_desc, extra={'color': 'green'})
-                else:
-                    log.error('ERROR: OCSP staple has status: %s on %s', ocsp_status.upper(), host_desc)
-            else:
+        host = "{} ({}:{}): ".format(host_name, ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0], port_number)
+        log.info(" • Verifying host %s", host)
+        with log.prefix("   - [{}:{}] ".format(host_name, item.type.upper())):
+            try:
+                log.debug('Connecting')
+                installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
                 if item.certificate.has_oscp_must_staple:
-                    log.error('[%s:%s] VALIDATION ERROR: Certificate has OCSP Must-Staple but no OSCP staple found on %s',
-                              item.name, item.type.upper(), host_desc)
-        except Exception as error:
-            log.error('[%s:%s] VALIDATION ERROR: Unable to connect to %s: %s', item.name, item.type.upper(), host_desc, str(error))
+                    attempts = 1
+                    while (not ocsp_staple) and (attempts < max_ocsp_verify_attempts):
+                        time.sleep(ocsp_verify_retry_delay)
+                        log.debug('Retry to fetch OCSP staple')
+                        installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
+                        attempts += 1
+
+                installed_certificate = Certificate(installed_certificates[0].to_cryptography())
+                installed_chain = [Certificate(cert.to_cryptography()) for cert in installed_certificates[1:]]
+                if item.certificate == installed_certificate:
+                    log.info('certificate present', extra={'color': 'green'})
+                else:
+                    log.error('certificate %s mismatch', installed_certificate.common_name)
+                if len(item.chain) != len(installed_chain):
+                    log.error('certificate chain length mismatch, got %s intermediate(s), expected %s', len(installed_chain), len(item.chain))
+                else:
+                    for intermediate, installed_intermediate in zip(item.chain, installed_chain):
+                        if intermediate == installed_intermediate:
+                            log.info('Intermediate certificate "%s" present', intermediate.common_name, extra={'color': 'green'})
+                        else:
+                            log.error('Intermediate certificate "%s" mismatch', installed_intermediate.common_name)
+                if ocsp_staple:
+                    log.debug('Verify OCSP response status')
+                    ocsp_status = ocsp_staple.response_status
+                    if 'good' == ocsp_status.lower():
+                        log.info('OCSP staple status is GOOD', extra={'color': 'green'})
+                    else:
+                        log.error('OCSP staple has status: %s', ocsp_status.upper())
+                else:
+                    if item.certificate.has_oscp_must_staple:
+                        log.error('Certificate has OCSP Must-Staple but no OSCP staple found')
+            except Exception as error:
+                log.error('Unable to connect: %s', str(error))
 
 
 def verify_certificate_installation(context: CertificateContext, max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int):
@@ -161,12 +158,12 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
     for item in context:  # type: CertificateItem
         certificate = item.certificate
         if not certificate:
-            log.warning('[%s:%s] certificate not found', context.name, item.type.upper())
+            log.warning('certificate not found')
             continue
 
         chain = item.chain
         if not chain:
-            log.warning('[%s:%s] chain not found', context.name, item.type.upper())
+            log.warning('chain not found')
             continue
 
         for verify in verify_list:

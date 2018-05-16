@@ -10,8 +10,9 @@ from typing import Iterable, Optional, Dict, Union, Tuple
 
 import collections
 
-from . import AcmeError, log, SUPPORTED_KEY_TYPES
-from .utils import FileTransaction, get_device_id, host_in_list, makedir, FileOwner, SCTLog
+from . import AcmeError, SUPPORTED_KEY_TYPES
+from .logging import log
+from .utils import FileTransaction, get_device_id, host_in_list, FileOwner, SCTLog
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
@@ -43,7 +44,7 @@ def _get_domain_names(zone_name: str, host_names):
 def _check(section: str, dest: dict, values: dict):
     for key, value in values.items():
         if key not in dest:
-            log.warning("[config] unsupported key '%s' in section '%s'", key, section)
+            log.warning("unsupported key '%s' in section '%s'", key, section)
 
 
 def _merge(section: str, dest: dict, values: dict, check: bool = True):
@@ -64,7 +65,7 @@ class VerifyTarget(object):
         else:
             assert isinstance(spec, dict), "dict expected but got " + str(spec.__class__)
             if 'port' not in spec:
-                log.error('[config] verify missing port definition')
+                log.error('verify missing port definition')
             self.port = spec.get('port')
             self.hosts = get_list(spec, 'hosts')
             self.starttls = spec.get('starttls')
@@ -125,7 +126,7 @@ class CertificateSpec(object):
         if self.common_name not in self.alt_names:
             raise AcmeError('[config] Certificate common name "{}" not listed in alt_names in certificate "{}"', self.common_name, name)
 
-        self.key_types = spec.get('key_types', self.private_key.types)
+        self.key_types = spec.get('key_types', self.private_key.types)  # type: Iterable[str]
         for kt in self.key_types:
             if kt not in SUPPORTED_KEY_TYPES:
                 raise AcmeError('[config] certificate {} requests unsupported key type "{}"', name, kt)
@@ -146,7 +147,7 @@ class CertificateSpec(object):
             if ct_log:
                 self.ct_submit_logs.append(SCTLog(ct_log_name, base64.b64decode(ct_log['id']), ct_log['url']))
             else:
-                log.warning("[config] certificate '%s' specify undefined ct_log '%s'", name, ct_log_name)
+                log.warning("certificate '%s' specify undefined ct_log '%s'", name, ct_log_name)
 
         self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
 
@@ -244,17 +245,13 @@ def configure_logger(level: Optional[str], fs: FileManager):
             "normal": logging.WARNING,
             "verbose": logging.INFO,
             "debug": logging.DEBUG,
-            "detail": logging.DEBUG,
         }
         if level not in levels:
-            log.warning("[config] unsupported log level: %s", level)
+            log.warning("unsupported log level: %s", level)
             level = "normal"
             log.setLevel(levels[level])
         # if level is None, don't create log file
-        if fs.directory('log') and fs.filename('log'):
-            makedir(fs.directory('log'), 0o700)
-            log_file_path = fs.filepath('log', 'certmgr')
-            log.addHandler(logging.FileHandler(log_file_path, encoding='UTF-8'))
+        log.file = fs.filepath('log', 'certmgr')
 
 
 _DEFAULT_CT_LOGS = {
@@ -324,7 +321,7 @@ class Configuration(object):
     @classmethod
     def _load(cls, file_path: str) -> Tuple['Configuration', FileManager]:
         cfg = cls(file_path)
-        with open(cfg.path, 'rt', encoding='utf-8') as config_file:
+        with open(cfg.path, 'rt', encoding='utf-8') as config_file, log.prefix("[config] "):
             data = json.load(config_file, object_pairs_hook=collections.OrderedDict)
 
             # configure log first, so configuration loading errors are properly logged.
@@ -372,11 +369,11 @@ class Configuration(object):
                 elif section == 'http_challenges':
                     pass
                 else:
-                    log.warning('[config] unknown section name: "%s"', section)
+                    log.warning('unknown section name: "%s"', section)
 
             certificates = data.get('certificates')
             if not certificates:
-                raise AcmeError('[config] section "certificates" is required and must not be empty.')
+                raise AcmeError('section "certificates" is required and must not be empty.')
             cfg._parse_certificates(certificates, sct_logs)
 
         return cfg, filemgr
@@ -475,7 +472,7 @@ class Configuration(object):
             cert = CertificateSpec(certificate_name, certificate_spec, self.settings, sct_logs)
             for host_name in cert.alt_names:
                 if host_name in host_names:
-                    log.info("[config] {} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
+                    log.info("{} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
                 host_names.add(host_name)
 
             for v in cert.verify:

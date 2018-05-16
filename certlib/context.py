@@ -7,14 +7,13 @@ import sys
 from typing import Optional, List, Tuple
 
 import collections
-from asn1crypto import ocsp
 
-from certlib.utils import FileTransaction, FileOwner
-from . import AcmeError, log, SUPPORTED_KEY_TYPES
+from . import AcmeError, SUPPORTED_KEY_TYPES
 from .config import CertificateSpec, FileManager, SCTLog
 from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam, load_full_chain_file, save_chain
-from .ocsp import load_ocsp_response
-from .utils import archive_file, SCTData
+from .logging import log
+from .ocsp import OCSP
+from .utils import FileTransaction, FileOwner, SCTData, archive_file
 
 KeyCipherData = collections.namedtuple('KeyCipherData', ['passphrase', 'forced'])
 
@@ -33,7 +32,7 @@ class CertificateItem(object):
 
         self._scts = {}
 
-        self._ocsp_response = _UNINITIALIZED  # type: Optional[ocsp.OCSPResponse]
+        self._ocsp_response = _UNINITIALIZED  # type: Optional[OCSP]
         self._ocsp_response_updated = False
 
         self._key = _UNINITIALIZED  # type: Optional[PrivateKey]
@@ -138,13 +137,12 @@ class CertificateItem(object):
 
         key = self.key
         if key.params != self.params:
-            log.info('[%s:%s] Private key is not %s', self.name, self.type.upper(), str(key))
+            log.info('Private key is not %s', str(key))
             return True
 
         certificate = self.certificate
         if self.spec.common_name != certificate.common_name:
-            log.info('[%s:%s] Common name changed from %s to %s', self.name, self.type.upper(),
-                     certificate.common_name, self.spec.common_name)
+            log.info('Common name changed from %s to %s', certificate.common_name, self.spec.common_name)
             return True
 
         new_alt_names = set(self.spec.alt_names)
@@ -154,42 +152,38 @@ class CertificateItem(object):
             removed_alt_names = existing_alt_names - new_alt_names
             added = ', '.join([alt_name for alt_name in self.spec.alt_names if (alt_name in added_alt_names)])
             removed = ', '.join([alt_name for alt_name in certificate.alt_names if (alt_name in removed_alt_names)])
-            log.info('[%s:%s] Alt names changed%s%s', self.name, self.type.upper(),
-                     (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
+            log.info('Alt names changed%s%s', (', adding ' + added) if added else '', (', removing ' + removed) if removed else '')
             return True
 
         if not key.match_certificate(certificate):
-            log.info('[%s:%s] certificate public key does not match private key', self.name, self.type.upper())
+            log.info('certificate public key does not match private key')
             return True
 
         if certificate.has_oscp_must_staple != self.spec.ocsp_must_staple:
-            log.info('[%s:%s] certificate %s ocsp_must_staple option', self.name, self.type.upper(),
-                     'has' if certificate.has_oscp_must_staple else 'does not have')
+            log.info('certificate %s ocsp_must_staple option', 'has' if certificate.has_oscp_must_staple else 'does not have')
             return True
 
         valid_duration = (certificate.not_after - datetime.datetime.utcnow())
         if valid_duration.days < 0:
-            log.info('[%s:%s] certificate has expired', self.name, self.type.upper())
+            log.info('certificate has expired')
             return True
         if valid_duration.days < renewal_days:
-            log.info('[%s:%s] certificate will expire in %s', self.name, self.type.upper(),
-                     (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
+            log.info('certificate will expire in %s', (str(valid_duration.days) + ' days') if valid_duration.days else 'less than a day')
             return True
 
         days_to_renew = valid_duration.days - renewal_days
-        log.debug('[%s:%s] certificate valid beyond renewal window (renew in %s %s)', self.name, self.type.upper(),
-                  days_to_renew, 'day' if (1 == days_to_renew) else 'days')
+        log.debug('certificate valid beyond renewal window (renew in %s %s)', days_to_renew, 'day' if (1 == days_to_renew) else 'days')
         return False
 
     @property
-    def ocsp_response(self) -> Optional[ocsp.OCSPResponse]:
+    def ocsp_response(self) -> Optional[OCSP]:
         if self._ocsp_response is _UNINITIALIZED:
-            self._ocsp_response = load_ocsp_response(self.context.fs.filepath('ocsp', self.name, self.type))
+            self._ocsp_response = OCSP.load(self.context.fs.filepath('ocsp', self.name, self.type))
 
         return self._ocsp_response
 
     @ocsp_response.setter
-    def ocsp_response(self, value: Optional[ocsp.OCSPResponse]):
+    def ocsp_response(self, value: Optional[OCSP]):
         self._ocsp_response_updated = self._ocsp_response is not value
         self._ocsp_response = value
 
@@ -204,7 +198,7 @@ class CertificateItem(object):
         ocsp_response = self.ocsp_response
         if ocsp_response:
             with FileTransaction('ocsp', file_path, chmod=0o644, owner=owner) as trx:
-                trx.write(self.ocsp_response.dump())
+                trx.write(ocsp_response.encode())
             return trx
         else:
             # TODO: archive existing response
@@ -248,11 +242,11 @@ class CertificateItem(object):
                 if ct_log.id == logid:
                     return SCTData(version, logid, timestamp, extensions, signature)
                 else:
-                    log.debug('[%s:%s] SCT "%s" does not match log id for "%s"', self.name, self.type, sct_file_path, ct_log.name)
+                    log.debug('SCT "%s" does not match log id for "%s"', sct_file_path, ct_log.name)
         except FileNotFoundError:
             return None
         except Exception as e:
-            log.warning("[%s:%s] error loading sct log '%s': %s", self.name, self.type, ct_log.name, str(e))
+            log.warning("error loading sct log '%s': %s", ct_log.name, str(e))
         return None
 
     def archive_file(self, file_type, archive_date: datetime.datetime, **kwargs):

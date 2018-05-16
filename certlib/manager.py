@@ -10,7 +10,6 @@ import sys
 import time
 import traceback
 from argparse import Namespace
-from logging import StreamHandler
 from typing import Iterable, Optional
 
 from acme import client, messages
@@ -18,14 +17,16 @@ from asn1crypto import ocsp as asn1_ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from . import log, AcmeError, actions, acme
+from certlib.actions import update_links
+from . import AcmeError, actions, acme
 from .acme import handle_authorizations
 from .actions import Action
 from .config import FileManager, Configuration, CertificateSpec, SCTLog
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey, load_full_chain, get_dhparam_size, get_ecparam_curve, generate_dhparam, generate_ecparam, Certificate
-from .ocsp import ocsp_response_status, ocsp_response_serial_number, ocsp_response_this_update, fetch_ocsp_response
-from .utils import Hooks, open_file, ColorFormatter, process_running, fetch_sct, commit_file_transactions
+from .logging import log
+from .ocsp import OCSP
+from .utils import Hooks, process_running, fetch_sct, commit_file_transactions
 from .verify import verify_certificate_installation
 
 
@@ -54,7 +55,6 @@ class UpdateAction(Action):
 
     def run(self, certificate: CertificateSpec):
         context = CertificateContext(certificate, self.fs)
-        log.info('[%s] Update', context.name)
         if self.args.certs:
             self.process_certificates(context)
         if self.args.params:
@@ -66,85 +66,89 @@ class UpdateAction(Action):
 
         self.apply_changes(context)
         self._done.append(context)
+        try:
+            update_links(certificate, self.fs)
+        except AcmeError as e:
+            log.error("symlinks update error: %s", str(e))
 
     def process_certificates(self, context: CertificateContext):
-        log.info(' * Certificate')
+        log.info('Update Certificates')
 
         # For each types, check if the cert exists and is valid (params match and not about to expire)
         for item in context:  # type: CertificateItem
-            if self.args.force or item.should_renew(self.config.int('renewal_days')):
-                log.debug('   [%s:%s] Generating key', item.name, item.type.upper())
-                key = PrivateKey.create(item.type, item.params)
+            with log.prefix('  - [{}] '.format(item.type.upper())):
+                if self.args.force or item.should_renew(self.config.int('renewal_days')):
+                    log.debug('Generating key')
+                    key = PrivateKey.create(item.type, item.params)
 
-                log.debug('   [%s:%s] Requesting certificate for "%s" with alt names: "%s"', item.name, item.type.upper(),
-                          item.spec.common_name, ', '.join(item.spec.alt_names))
-                csr = key.create_csr(item.spec.common_name, item.spec.alt_names, item.spec.ocsp_must_staple)
-                order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
-                if self.args.no_auth:
-                    for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
-                        status = authorization_resource.body.status
-                        domain_name = authorization_resource.body.identifier.value
-                        if messages.STATUS_VALID != status:
-                            raise AcmeError('[%s:%s] Domain "%s" not authorized and auth disabled (status: %s)',
-                                            item.name, item.type.upper(), domain_name, status)
-                else:
-                    handle_authorizations(order, self.fs, self.acme_client,
-                                          self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'))
+                    log.debug('Requesting certificate for "%s" with alt names: "%s"', item.spec.common_name, ', '.join(item.spec.alt_names))
+                    csr = key.create_csr(item.spec.common_name, item.spec.alt_names, item.spec.ocsp_must_staple)
+                    order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
+                    if self.args.no_auth:
+                        for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
+                            status = authorization_resource.body.status
+                            domain_name = authorization_resource.body.identifier.value
+                            if messages.STATUS_VALID != status:
+                                raise AcmeError('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
+                    else:
+                        handle_authorizations(order, self.fs, self.acme_client,
+                                              self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'))
 
-                try:
-                    order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))
-                    certificate, chain = load_full_chain(order.fullchain_pem.encode('ascii'))
-                    item.update(key, certificate, chain)
-                except Exception as e:
-                    raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
+                    try:
+                        order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))
+                        certificate, chain = load_full_chain(order.fullchain_pem.encode('ascii'))
+                        item.update(key, certificate, chain)
+                    except Exception as e:
+                        raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
 
-                log.info('   [%s:%s] New certificate issued', item.name, item.type.upper())
+                    log.info('New certificate issued')
 
     def process_params(self, context: CertificateContext):
-        log.info(' * DH and EC params')
+        log.info('Update DH and EC params')
 
-        if not self.args.certs and not self.args.force:
-            log.debug("   - Trying to update params without updating certificate. Will update them only if configuration did change")
+        with log.prefix("  - "):
+            if not self.args.certs and not self.args.force:
+                log.debug("Trying to update params without updating certificate. Will update them only if configuration did change")
 
-        # Force refresh when certificates are updated
-        force = self.args.force or context.updated
+            # Force refresh when certificates are updated
+            force = self.args.force or context.updated
 
-        # Updating dhparams
-        dhparams = context.dhparams
-        dhparam_size = context.spec.dhparam_size
-        if dhparams:
-            if force or not dhparam_size:
-                dhparams = None
-            elif dhparam_size and dhparam_size != get_dhparam_size(dhparams):
-                log.debug('   - Diffie-Hellman parameters are not %s bits', dhparam_size)
-                dhparams = None
+            # Updating dhparams
+            dhparams = context.dhparams
+            dhparam_size = context.spec.dhparam_size
+            if dhparams:
+                if force or not dhparam_size:
+                    dhparams = None
+                elif dhparam_size and dhparam_size != get_dhparam_size(dhparams):
+                    log.debug('Diffie-Hellman parameters are not %s bits', dhparam_size)
+                    dhparams = None
 
-        ecparams = context.ecparams
-        ecparam_curve = context.spec.ecparam_curve
-        if ecparams:
-            if force or not ecparam_curve:
-                ecparams = None
-            elif ecparam_curve and ecparam_curve != get_ecparam_curve(ecparams):
-                log.debug('   - Elliptical curve parameters is not %s', ecparam_curve)
-                ecparams = None
+            ecparams = context.ecparams
+            ecparam_curve = context.spec.ecparam_curve
+            if ecparams:
+                if force or not ecparam_curve:
+                    ecparams = None
+                elif ecparam_curve and ecparam_curve != get_ecparam_curve(ecparams):
+                    log.debug('Elliptical curve parameters is not %s', ecparam_curve)
+                    ecparams = None
 
-        if dhparam_size or ecparam_curve:
-            # generate params if needed
-            if dhparam_size and not dhparams:
-                log.info('   - Generating %s bit Diffie-Hellman parameters', dhparam_size)
-                dhparams = generate_dhparam(dhparam_size)
-            if ecparam_curve and not ecparams:
-                log.info('   - Generating %s elliptical curve parameters', ecparam_curve)
-                ecparams = generate_ecparam(ecparam_curve)
-            context.update(dhparams, ecparams)
-        elif context.dhparams or context.ecparams:
-            log.debug("   - Removing DH and EC params")
-            context.update(None, None)
+            if dhparam_size or ecparam_curve:
+                # generate params if needed
+                if dhparam_size and not dhparams:
+                    log.info('Generating %s bit Diffie-Hellman parameters', dhparam_size)
+                    dhparams = generate_dhparam(dhparam_size)
+                if ecparam_curve and not ecparams:
+                    log.info('Generating %s elliptical curve parameters', ecparam_curve)
+                    ecparams = generate_ecparam(ecparam_curve)
+                context.update(dhparams, ecparams)
+            elif context.dhparams or context.ecparams:
+                log.debug("Removing DH and EC params")
+                context.update(None, None)
 
-        if context.params_updated:
-            log.debug("   - DH and EC params updated")
-        else:
-            log.debug("   - DH and EC up to date")
+            if context.params_updated:
+                log.debug("DH and EC params updated")
+            else:
+                log.debug("DH and EC up to date")
 
     def update_ocsp(self, context: CertificateContext):
         if not self.fs.directory('ocsp'):
@@ -154,80 +158,79 @@ class UpdateAction(Action):
         if not context.spec.ocsp_responder_urls:
             return
 
-        log.info(' * OCSP Response')
+        log.info('Update OCSP Response')
         for item in context:  # type: CertificateItem
-            if not item.certificate:
-                log.warning("   - [%s] certificate not found. Can't update OCSP response", item.type.upper())
-                continue
+            with log.prefix('  - [{}] '.format(item.type.upper())):
+                if not item.certificate:
+                    log.warning("certificate not found. Can't update OCSP response")
+                    continue
 
-            ocsp_response = item.ocsp_response
-            if (ocsp_response and ('good' == ocsp_response_status(ocsp_response).lower())
-                    and (ocsp_response_serial_number(ocsp_response) == item.certificate.serial_number)):
-                last_update = ocsp_response_this_update(ocsp_response)
-                log.debug('   - [%s] Have stapled OCSP response updated at %s',
-                          item.type.upper(), last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
-            else:
-                last_update = None
+                ocsp_response = item.ocsp_response
+                if (ocsp_response and ('good' == ocsp_response.response_status.lower())
+                        and (ocsp_response.serial_number == item.certificate.serial_number)):
+                    last_update = ocsp_response.this_update
+                    log.debug('Have stapled OCSP response updated at %s', last_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                else:
+                    last_update = None
 
-            ocsp_urls = (item.certificate.ocsp_urls or context.spec.ocsp_responder_urls)
-            if not ocsp_urls:
-                log.warning('   - [%s] No OCSP responder URL and no default set', item.type.upper())
-                continue
+                ocsp_urls = (item.certificate.ocsp_urls or context.spec.ocsp_responder_urls)
+                if not ocsp_urls:
+                    log.warning('No OCSP responder URL and no default set')
+                    continue
 
-            chain = item.chain
-            issuer_certificate = chain[0] if chain else self.root_certificate(item.type)
-            issuer_name = issuer_certificate.x509_certificate.subject.public_bytes(default_backend())
-            issuer_key = issuer_certificate.x509_certificate.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.PKCS1)
-            tbs_request = asn1_ocsp.TBSRequest({
-                'request_list': [
-                    {
-                        'req_cert': {
-                            'hash_algorithm': {'algorithm': 'sha1'},
-                            'issuer_name_hash': hashlib.sha1(issuer_name).digest(),
-                            'issuer_key_hash': hashlib.sha1(issuer_key).digest(),
-                            'serial_number': item.certificate.serial_number,
-                        },
-                        'single_request_extensions': None
-                    }
-                ],
-                'request_extensions': None  # [{'extn_id': 'nonce', 'critical': False, 'extn_value': os.urandom(16)}]
-                # we don't appear to be getting the nonce back, so don't send it
-            })
-            ocsp_request = asn1_ocsp.OCSPRequest({
-                'tbs_request': tbs_request,
-                'optional_signature': None
-            })
+                chain = item.chain
+                issuer_certificate = chain[0] if chain else self.root_certificate(item.type)
+                issuer_name = issuer_certificate.x509_certificate.subject.public_bytes(default_backend())
+                issuer_key = issuer_certificate.x509_certificate.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.PKCS1)
+                tbs_request = asn1_ocsp.TBSRequest({
+                    'request_list': [
+                        {
+                            'req_cert': {
+                                'hash_algorithm': {'algorithm': 'sha1'},
+                                'issuer_name_hash': hashlib.sha1(issuer_name).digest(),
+                                'issuer_key_hash': hashlib.sha1(issuer_key).digest(),
+                                'serial_number': item.certificate.serial_number,
+                            },
+                            'single_request_extensions': None
+                        }
+                    ],
+                    'request_extensions': None  # [{'extn_id': 'nonce', 'critical': False, 'extn_value': os.urandom(16)}]
+                    # we don't appear to be getting the nonce back, so don't send it
+                })
+                ocsp_request = asn1_ocsp.OCSPRequest({
+                    'tbs_request': tbs_request,
+                    'optional_signature': None
+                })
 
-            for ocsp_url in ocsp_urls:
-                ocsp_response = fetch_ocsp_response(ocsp_url, ocsp_request, last_update)
-                if ocsp_response:
-                    if 'successful' != ocsp_response['response_status'].native:
-                        log.warning('   - [%s] OCSP request received "%s" from %s', item.type.upper(),
-                                    ocsp_response['response_status'].native, ocsp_url)
-                        continue
+                for ocsp_url in ocsp_urls:
+                    ocsp_response = OCSP.fetch(ocsp_url, ocsp_request, last_update)
+                    if ocsp_response:
+                        if 'successful' != ocsp_response.response_status.native:
+                            log.warning('OCSP request received "%s" from %s', ocsp_response.response_status.native, ocsp_url)
+                            continue
 
-                    ocsp_status = ocsp_response_status(ocsp_response)
-                    this_update = ocsp_response_this_update(ocsp_response)
-                    log.debug('   - [%s] Retrieved OCSP status "%s" from %s updated at %s', item.type.upper(),
-                              ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
-                    if 'good' != ocsp_status.lower():
-                        log.warning('   - [%s] certificate has OCSP status "%s" from %s updated at %s', item.type.upper(),
-                                    ocsp_status.upper(), ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
-                        continue
+                        ocsp_status = ocsp_response.response_status
+                        this_update = ocsp_response.this_update
+                        log.debug('Retrieved OCSP status "%s" from %s updated at %s', ocsp_status.upper(),
+                                  ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                        if 'good' != ocsp_status.lower():
+                            log.warning('certificate has OCSP status "%s" from %s updated at %s', ocsp_status.upper(),
+                                        ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))
+                            continue
 
-                    if this_update == last_update:
-                        log.debug('   - [%s] OCSP response from %s has not been updated', item.type.upper(), ocsp_url)
+                        if this_update == last_update:
+                            log.debug('OCSP response from %s has not been updated', ocsp_url)
+                            break
+
+                        log.info('Updating OCSP response from %s', ocsp_url)
+                        item.ocsp_response = ocsp_response
                         break
 
-                    log.info('   - [%s] Updating OCSP response from %s', item.type.upper(), ocsp_url)
-                    item.ocsp_response = ocsp_response
-                    break
-
-                elif ocsp_response is False:
-                    log.debug('   - [%s] OCSP response from %s has not been updated', item.type.upper(), ocsp_url)
-                    break
-            else:
-                log.warning('   - [%s] Unable to retrieve OCSP response', item.type.upper())
+                    elif ocsp_response is False:
+                        log.debug('OCSP response from %s has not been updated', ocsp_url)
+                        break
+                else:
+                    log.warning('Unable to retrieve OCSP response')
 
     def update_signed_certificate_timestamps(self, context: CertificateContext):
         if not self.fs.directory('sct'):
@@ -236,21 +239,23 @@ class UpdateAction(Action):
         if not context.spec.ct_submit_logs:
             return
 
-        log.info(' * Signed Certificate Timestamps')
+        log.info('Update Signed Certificate Timestamps')
 
         for item in context:  # type: CertificateItem
-            if not item.certificate:
-                log.warning('   - (%s] certificate not found', item.type.upper())
-                continue
+            with log.prefix('  - [{}] '.format(item.type.upper())):
+                if not item.certificate:
+                    log.warning('certificate not found')
+                    continue
 
-            for ct_log in context.spec.ct_submit_logs:  # type: SCTLog
-                sct_data = fetch_sct(ct_log, item.certificate, item.chain)
-                if sct_data:
-                    log.debug('   - [%s] %s has SCT for at %s', item.type.upper(), ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())
-                    existing_sct_data, _ = item.sct(ct_log)
-                    if sct_data and ((not existing_sct_data) or (sct_data != existing_sct_data)):
-                        log.info('   - [%s] Saving Signed Certificate Timestamp from %s', item.type.upper(), ct_log.name)
-                        item.update_sct(ct_log, sct_data)
+                for ct_log in context.spec.ct_submit_logs:  # type: SCTLog
+                    sct_data = fetch_sct(ct_log, item.certificate, item.chain)
+                    if sct_data:
+                        existing_sct_data, _ = item.sct(ct_log)
+                        if sct_data and sct_data != existing_sct_data:
+                            log.info('[%s] Saving SCT (%s)', ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())
+                            item.update_sct(ct_log, sct_data)
+                        elif sct_data:
+                            log.debug('[%s] SCT up to date (%s)', ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())
 
     def apply_changes(self, context: CertificateContext):
         # commit transaction, execute hooks, schedule service reload, …
@@ -324,13 +329,6 @@ class UpdateAction(Action):
                 raise AcmeError('[{}] Unable to install keys and certificates', context.name) from e
 
     def finalize(self):
-        linker = actions.LinkAction(self.config, self.fs, self.args)
-        for context in self._done:
-            try:
-                linker.run(context.spec)
-            except AcmeError as e:
-                log.error("[%s] symlinks update error: %s", context.name, str(e))
-
         # Call hook usefull to sync status with other hosts
         updated = [context.name for context in self._done if context.updated]
         if updated:
@@ -346,10 +344,12 @@ class UpdateAction(Action):
             max_ocsp_verify_attempts = self.config.int('max_ocsp_verify_attempts')
             ocsp_verify_retry_delay = self.config.int('ocsp_verify_retry_delay')
             for context in self._done:
-                try:
-                    verify_certificate_installation(context, max_ocsp_verify_attempts, ocsp_verify_retry_delay)
-                except AcmeError as e:
-                    log.error("[%s] validation error: %s", context.name, str(e))
+                with log.prefix("[{}] ".format(context.name)):
+                    log.info("Verify certificates")
+                    try:
+                        verify_certificate_installation(context, max_ocsp_verify_attempts, ocsp_verify_retry_delay)
+                    except AcmeError as e:
+                        log.error("validation error: %s", str(e))
 
     def update_services(self, services: Iterable[str]):
         if services:
@@ -358,18 +358,21 @@ class UpdateAction(Action):
     def _reload_services(self) -> bool:
         reloaded = False
         for service_name in self._services:
-            service_command = self.config.service(service_name)
-            if service_command:
-                log.info('Reloading service %s', service_name)
-                try:
-                    output = subprocess.check_output(service_command, shell=True, stderr=subprocess.STDOUT)
-                    reloaded = True
-                    if output:
-                        log.info('Service "%s" responded to reload with:\n%s', service_name, output)
-                except subprocess.CalledProcessError as error:
-                    log.warning('Service "%s" reload failed, code: %s:\n%s', service_name, error.returncode, error.output)
-            else:
-                log.error('Service %s does not have registered reload command', service_name)
+            with log.prefix(" - [{}] ".format(service_name)):
+                service_command = self.config.service(service_name)
+                if service_command:
+                    log.info('reloading service')
+                    try:
+                        output = subprocess.check_output(service_command, shell=True, stderr=subprocess.STDOUT)
+                        reloaded = True
+                        if output:
+                            log.info('reload OK with result:\n%s', output)
+                        else:
+                            log.debug('reload OK')
+                    except subprocess.CalledProcessError as e:
+                        log.warning('reload failed, code: %s:\n%s', e.returncode, e.output)
+                else:
+                    log.error('no reload command registred')
         return reloaded
 
 
@@ -469,14 +472,7 @@ class AcmeManager(object):
             self.args = argparser.parse_args(sys.argv[1:] + ['update'])
 
         # reset root logger
-        for handler in list(log.handlers):
-            log.removeHandler(handler)
-        # create console handler
-        stream = StreamHandler(sys.stderr)
-        # enable color output
-        if sys.stderr.isatty() and self.args.color and not self.args.no_color:
-            stream.setFormatter(ColorFormatter())
-        log.addHandler(stream)
+        log.reset(self.args.color and not self.args.no_color)
 
         if self.args.quiet:
             log.setLevel(logging.ERROR)
@@ -488,9 +484,8 @@ class AcmeManager(object):
             log.setLevel(logging.WARNING)
 
         self.config, self.fs = Configuration.load(self.args.config_path, ('.', os.path.join('/etc', self.script_name), self.script_dir))
-        if not self.config.get('color_output'):
-            # Reset formatter in case we don't want color
-            stream.setFormatter(logging.Formatter())
+        # update color setting
+        log.color = self.config.get('color_output')
 
     # def export_client_key(self, path: str):
     #     log.debug("exporting client key")
@@ -507,7 +502,8 @@ class AcmeManager(object):
     def connect_client(self) -> client.ClientV2:
         resource_dir = os.path.join(self.script_dir, self.fs.directory('resource'))
         archive_dir = self.fs.archive_dir('client')
-        return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'), archive_dir)
+        with log.prefix('[acme] '):
+            return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'), archive_dir)
 
     def run(self):
         log.info('\n----- %s executed at %s', self.script_name, str(datetime.datetime.now()))
@@ -532,7 +528,7 @@ class AcmeManager(object):
         else:
             if process_running(pid_file_path):
                 log.error('Client already running')
-        with open_file(pid_file_path, 'w') as pid_file:
+        with open(pid_file_path, 'w') as pid_file:
             pid_file.write(str(os.getpid()))
         try:
             acme_client = None
@@ -546,13 +542,13 @@ class AcmeManager(object):
                     log.warning("requested certificate '%s' does not exists in config", certificate_name)
                     continue
                 try:
-                    action.run(cert)
+                    with log.prefix('[{}] '.format(cert.name)):
+                        action.run(cert)
                 except AcmeError as e:
                     log.error("[%s] processing failed. No files updated\n%s", cert.name, str(e))
                     if self.args.debug:
                         traceback.print_exc()
-                else:
-                    action.finalize()
+            action.finalize()
         finally:
             os.remove(pid_file_path)
 
