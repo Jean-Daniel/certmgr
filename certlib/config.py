@@ -245,6 +245,7 @@ class FileManager(object):
 
 
 def configure_logger(level: Optional[str], fs: FileManager):
+    # if level is None, don't create log file
     if level is not None:
         levels = {
             "normal": logging.WARNING,
@@ -254,9 +255,7 @@ def configure_logger(level: Optional[str], fs: FileManager):
         if level not in levels:
             log.warning("unsupported log level: %s", level)
             level = "normal"
-            log.setLevel(levels[level])
-        # if level is None, don't create log file
-        log.file = fs.filepath('log', 'certmgr')
+        log.set_file(fs.filepath('log', 'certmgr'), levels[level])
 
 
 _DEFAULT_CT_LOGS = {

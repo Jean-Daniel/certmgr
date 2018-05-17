@@ -484,17 +484,16 @@ class AcmeManager(object):
         if not getattr(self.args, 'cls', None):
             self.args = argparser.parse_args(sys.argv[1:] + ['update'])
 
-        # reset root logger
-        log.reset(self.args.color and not self.args.no_color)
-
+        level = logging.WARNING
         if self.args.quiet:
-            log.setLevel(logging.ERROR)
+            level = logging.ERROR
         elif self.args.debug:
-            log.setLevel(logging.DEBUG)
+            level = logging.DEBUG
         elif self.args.verbose:
-            log.setLevel(logging.INFO)
-        else:
-            log.setLevel(logging.WARNING)
+            level = logging.INFO
+
+        # reset root logger
+        log.reset(self.args.color and not self.args.no_color, level)
 
         self.config, self.fs = Configuration.load(self.args.config_path, ('.', os.path.join('/etc', self.script_name), self.script_dir))
         # update color setting

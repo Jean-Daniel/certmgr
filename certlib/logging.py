@@ -60,32 +60,29 @@ class ColorFormatter(_Formatter):
         return '\033[{style};{color}m{message}\033[0m'.format(color=self._color_codes[color], style=self._style_codes[style], message=msg)
 
 
-@contextlib.contextmanager
-def swap(values: dict, key: str, value: str):
-    orig = values[key]
-    values[key] = value
-    yield
-    values[key] = orig
-
-
 class _Logger(logging.LoggerAdapter):
 
     def __init__(self, logger):
         super().__init__(logger, {'prefix': ''})
         self._stream = None  # type: logging.StreamHandler
         self._file = None
+        self.setLevel(logging.DEBUG)
 
     def process(self, msg, kwargs):
         extra = kwargs.get('extra')
         if extra:
-            kwargs["extra"] = dict(extra)
-            kwargs["extra"].update(self.extra)
+            kwargs["extra"] = dict(self.extra)
+            kwargs["extra"].update(extra)
         else:
             kwargs["extra"] = self.extra
         return msg, kwargs
 
+    @contextlib.contextmanager
     def prefix(self, prefix: str):
-        return swap(self.extra, 'prefix', self.extra['prefix'] + prefix)
+        orig = self.extra['prefix']
+        self.extra['prefix'] += prefix
+        yield
+        self.extra['prefix'] = orig
 
     @property
     def color(self) -> bool:
@@ -105,21 +102,22 @@ class _Logger(logging.LoggerAdapter):
     def file(self) -> Optional[str]:
         return self._file.baseFilename if self._file else None
 
-    @file.setter
-    def file(self, path: Optional[str]):
+    def set_file(self, path: Optional[str], level: int):
         if self._file:
             self.logger.removeHandler(self._file)
             self._file = None
         if path:
             self._file = logging.FileHandler(path, encoding='UTF-8')
             self._file.setFormatter(_Formatter())
+            self._file.level = level
             self.logger.addHandler(self._file)
 
-    def reset(self, color: bool):
+    def reset(self, color: bool, level: int):
         for handler in list(self.logger.handlers):
             self.logger.removeHandler(handler)
         # create console handler
         self._stream = logging.StreamHandler(sys.stderr)
+        self._stream.level = level
         # enable color output
         if sys.stderr.isatty() and color:
             self._stream.setFormatter(ColorFormatter())
