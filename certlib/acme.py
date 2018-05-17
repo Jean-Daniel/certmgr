@@ -14,10 +14,11 @@ from acme import messages, client
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from certlib.utils import ArchiveAndWriteOperation
 from . import AcmeError
 from .config import FileManager
 from .logging import log
-from .utils import open_file, makedir, FileTransaction, commit_file_transactions
+from .utils import open_file, makedir, commit_file_transactions, Hooks
 
 
 def _user_agent():
@@ -93,15 +94,17 @@ def connect_client(resource_dir: str, account: str, directory_url: str, archive_
 
     transactions = []
     if generated_client_key:
-        with FileTransaction('client', client_key_path, chmod=0o600, mode='w') as client_key_transaction:
-            client_key_transaction.write(json.dumps(client_key.fields_to_partial_json()))
-            client_key_transaction.message = 'Saved client key'
-            transactions.append(client_key_transaction)
+        op = ArchiveAndWriteOperation('client', client_key_path, mode=0o600)
+        with op.file(binary=False) as f:
+            json.dump(client_key.fields_to_partial_json(), f)
+        # op.message = 'Saved client key'
+        transactions.append(op)
 
-    with FileTransaction('registration', registration_path, chmod=0o600, mode='w') as registration_transaction:
-        registration_transaction.write(registration.json_dumps())
-        registration_transaction.message = 'Saved registration'
-        transactions.append(registration_transaction)
+    op = ArchiveAndWriteOperation('registration', registration_path, mode=0o600)
+    with op.file() as f:
+        f.write(registration.json_dumps())
+    # op.message = 'Saved registration'
+    transactions.append(op)
     try:
         commit_file_transactions(transactions, archive_dir)
     except Exception as e:
@@ -118,7 +121,7 @@ def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: s
 
 
 def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_client: client.ClientV2,
-                          retry: int, delay: int) -> List[messages.AuthorizationResource]:
+                          retry: int, delay: int, hooks: Hooks) -> List[messages.AuthorizationResource]:
     authorizations = []
     authorization_resources = {}
 
@@ -154,12 +157,14 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
             with open_file(challenge_file_path, 'w', 0o644) as f:
                 f.write(challenge.validation(acme_client.net.key))
             challenge_http_responses[domain_name] = challenge_file_path
+            hooks.add('set_http_challenge', domain=domain_name, file=challenge_file_path)
         except Exception as error:
             # remove already saved challenges
             for challenge_file in challenge_http_responses.values():
                 os.remove(challenge_file)
             raise AcmeError('Unable to create acme-challenge file "{}"', challenge_file_path) from error
     try:
+        hooks.call()
         # Process authorizations
         authorizations += _get_authorizations(acme_client, authorization_resources, retry, delay)
     except Exception:
@@ -171,6 +176,8 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
     for domain_name, challenge_file in challenge_http_responses.items():
         log.debug('Removing http acme-challenge for %s', domain_name)
         os.remove(challenge_file)
+        hooks.add('clear_http_challenge', domain=domain_name, file=challenge_file)
+    hooks.call()
 
     return authorizations
 

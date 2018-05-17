@@ -92,7 +92,7 @@ class UpdateAction(Action):
                                 raise AcmeError('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
                     else:
                         handle_authorizations(order, self.fs, self.acme_client,
-                                              self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'))
+                                              self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
                     try:
                         order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))

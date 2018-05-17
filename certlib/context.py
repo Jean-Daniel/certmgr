@@ -8,12 +8,13 @@ from typing import Optional, List, Tuple
 
 import collections
 
+from certlib.utils import ArchiveAndWriteOperation
 from . import AcmeError, SUPPORTED_KEY_TYPES
 from .config import CertificateSpec, FileManager, SCTLog
 from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log
 from .ocsp import OCSP
-from .utils import FileTransaction, FileOwner, SCTData, archive_file
+from .utils import FileOwner, SCTData, Operation
 
 KeyCipherData = collections.namedtuple('KeyCipherData', ['passphrase', 'forced'])
 
@@ -58,7 +59,7 @@ class CertificateItem(object):
             self._key = self._load_key()
         return self._key
 
-    def save_key(self, owner: FileOwner, with_certificate: bool = False) -> Optional[FileTransaction]:
+    def save_key(self, owner: FileOwner, with_certificate: bool = False) -> Optional[Operation]:
         file_type = 'full_key' if with_certificate else 'private_key'
         key_path = self.context.fs.filepath(file_type, self.name, self.type)
         if not key_path:
@@ -66,12 +67,13 @@ class CertificateItem(object):
 
         key_cipher_data = self.context.key_cipher()
         password = key_cipher_data.passphrase if key_cipher_data and not key_cipher_data.forced else None
-        with FileTransaction(file_type, key_path, chmod=0o640, owner=owner) as trx:
-            trx.write(self.key.encode(password))
+        op = ArchiveAndWriteOperation(file_type, key_path, mode=0o640, owner=owner)
+        with op.file() as f:
+            f.write(self.key.encode(password))
             if with_certificate:
-                trx.write(b'\n')
-                self.certificate.dump(trx, self.chain, self.context.dhparams, self.context.ecparams)
-        return trx
+                f.write(b'\n')
+                self.certificate.dump(f, self.chain, self.context.dhparams, self.context.ecparams)
+        return op
 
     def _load_key(self) -> Optional[PrivateKey]:
         key_file_path = self.context.fs.filepath('private_key', self.name, self.type)
@@ -86,14 +88,15 @@ class CertificateItem(object):
             self._load_certificate_and_chain()
         return self._certificate
 
-    def save_certificate(self, owner: FileOwner, root: Optional[Certificate] = None) -> Optional[FileTransaction]:
+    def save_certificate(self, owner: FileOwner, root: Optional[Certificate] = None) -> Optional[Operation]:
         file_type = 'full_certificate' if root else 'certificate'
         cert_path = self.context.fs.filepath(file_type, self.name, self.type)
         if not cert_path:
             return None
-        with FileTransaction(file_type, cert_path, chmod=0o644, owner=owner) as trx:
-            self.certificate.dump(trx, self.chain, self.context.dhparams, self.context.ecparams, root)
-        return trx
+        op = ArchiveAndWriteOperation(file_type, cert_path, mode=0o644, owner=owner)
+        with op.file() as f:
+            self.certificate.dump(f, self.chain, self.context.dhparams, self.context.ecparams, root)
+        return op
 
     @property
     def chain(self) -> List[Certificate]:
@@ -101,13 +104,14 @@ class CertificateItem(object):
             self._load_certificate_and_chain()
         return self._chain
 
-    def save_chain(self, owner: FileOwner) -> Optional[FileTransaction]:
+    def save_chain(self, owner: FileOwner) -> Optional[Operation]:
         chain_path = self.context.fs.filepath('chain', self.name, self.type)
         if not chain_path:
             return None
-        with FileTransaction('chain', chain_path, chmod=0o644, owner=owner) as trx:
-            save_chain(trx, self.chain)
-        return trx
+        op = ArchiveAndWriteOperation('chain', chain_path, mode=0o644, owner=owner)
+        with op.file() as f:
+            save_chain(f, self.chain)
+        return op
 
     def update(self, key: PrivateKey, cert: Certificate, chain: List[Certificate]):
         self._certificate_updated = self._key is not key or self._certificate is not cert or self._chain is not chain
@@ -191,18 +195,16 @@ class CertificateItem(object):
     def ocsp_updated(self):
         return self._ocsp_response_updated
 
-    def save_ocsp(self, owner: FileOwner) -> Optional[FileTransaction]:
+    def save_ocsp(self, owner: FileOwner) -> Optional[Operation]:
         file_path = self.context.fs.filepath('ocsp', self.name, self.type)
         if not file_path:
             return None
         ocsp_response = self.ocsp_response
+        op = ArchiveAndWriteOperation('ocsp', file_path, mode=0o644, owner=owner)
         if ocsp_response:
-            with FileTransaction('ocsp', file_path, chmod=0o644, owner=owner) as trx:
-                trx.write(ocsp_response.encode())
-            return trx
-        else:
-            # TODO: archive existing response
-            return None
+            with op.file() as f:
+                f.write(ocsp_response.encode())
+        return op
 
     def sct(self, ct_log: SCTLog) -> Tuple[Optional[SCTData], bool]:
         if ct_log.name not in self._scts:
@@ -212,23 +214,21 @@ class CertificateItem(object):
     def update_sct(self, ct_log: SCTLog, sct_data: SCTData):
         self._scts[ct_log.name] = sct_data, sct_data != self._scts.get(ct_log.name)
 
-    def save_sct(self, ct_log: SCTLog, owner: FileOwner) -> Optional[FileTransaction]:
+    def save_sct(self, ct_log: SCTLog, owner: FileOwner) -> Optional[Operation]:
         file_path = self.context.fs.filepath('sct', self.name, self.type, ct_log_name=ct_log.name)
         if not file_path:
             return None
         sct_data, _ = self.sct(ct_log)
+        op = ArchiveAndWriteOperation('sct', file_path, mode=0o644, owner=owner)
         if sct_data:
-            with FileTransaction('sct', file_path, chmod=0o644, owner=owner) as trx:
+            with op.file() as f:
                 sct = struct.pack('>b32sQH', sct_data.version, sct_data.id, sct_data.timestamp, len(sct_data.extensions))
-                trx.write(sct)
+                f.write(sct)
                 if sct_data.extensions:
-                    trx.write(sct_data.extensions)
+                    f.write(sct_data.extensions)
                 if sct_data.signature:
-                    trx.write(sct_data.signature)
-            return trx
-        else:
-            # TODO: archive existing data
-            return None
+                    f.write(sct_data.signature)
+        return op
 
     def _load_sct(self, ct_log: SCTLog) -> Optional[SCTData]:
         try:
@@ -248,9 +248,6 @@ class CertificateItem(object):
         except Exception as e:
             log.warning("error loading sct log '%s': %s", ct_log.name, str(e))
         return None
-
-    def archive_file(self, file_type, archive_date: datetime.datetime, **kwargs):
-        self.context.archive_file(file_type, archive_date, key_type=self.type, **kwargs)
 
 
 class CertificateContext(object):
@@ -298,21 +295,20 @@ class CertificateContext(object):
     def params_updated(self):
         return self._params_updated
 
-    def save_params(self, owner: FileOwner) -> Optional[FileTransaction]:
+    def save_params(self, owner: FileOwner) -> Optional[Operation]:
         param_file = self.fs.filepath('param', self.name)
         if not param_file:
             return None
         dhparams = self._dhparams
         ecparams = self._ecparams
+        op = ArchiveAndWriteOperation('param', param_file, mode=0o640, owner=owner)
         if dhparams or ecparams:
-            with FileTransaction('param', param_file, chmod=0o640, owner=owner) as transaction:
+            with op.file() as f:
                 if dhparams and ecparams:
-                    transaction.write(dhparams + b'\n' + ecparams)
+                    f.write(dhparams + b'\n' + ecparams)
                 else:
-                    transaction.write(dhparams or ecparams)
-            return transaction
-        # TODO: transaction that archive file only
-        return None
+                    f.write(dhparams or ecparams)
+        return op
 
     def update(self, dhparams: Optional[bytes], ecparams: Optional[bytes]):
         self._params_updated = dhparams != self._dhparams or ecparams != self._ecparams
@@ -373,8 +369,3 @@ class CertificateContext(object):
         if ecparam_pem and not check_ecparam(ecparam_pem):
             ecparam_pem = None
         return dhparam_pem, ecparam_pem
-
-    def archive_file(self, file_type, archive_date=datetime.datetime.now(), **kwargs) -> Optional[Tuple[str, str]]:
-        file_path = self.fs.filepath(file_type, self.name, **kwargs)
-        archive_dir = self.fs.archive_dir(self.name)
-        return archive_file(file_type, file_path, archive_dir, archive_date)

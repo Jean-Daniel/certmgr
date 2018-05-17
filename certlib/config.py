@@ -1,4 +1,5 @@
 import base64
+import datetime
 import grp
 import json
 import logging
@@ -12,7 +13,7 @@ import collections
 
 from . import AcmeError, SUPPORTED_KEY_TYPES
 from .logging import log
-from .utils import FileTransaction, get_device_id, host_in_list, FileOwner, SCTLog
+from .utils import get_device_id, host_in_list, FileOwner, SCTLog
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
@@ -226,7 +227,10 @@ class FileManager(object):
 
     def archive_dir(self, name: str) -> Optional[str]:
         archive = self.directory('archive')
-        return os.path.join(archive, name) if archive else None
+        if not archive:
+            return None
+        date = datetime.datetime.now().strftime('%Y_%m_%d_%H%M%S')
+        return os.path.join(archive, name, date)
 
     def http_challenge_directory(self, domain_name: str) -> Optional[str]:
         challenge_dir = self._challenges.get(domain_name)

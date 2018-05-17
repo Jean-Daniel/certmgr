@@ -1,5 +1,8 @@
+import abc
 import base64
+import contextlib
 import datetime
+import io
 import logging
 import os
 import shlex
@@ -93,50 +96,13 @@ def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner
     return new_file_path
 
 
-def archive_file(file_type, file_path: str, archive_dir: str, archive_date: datetime.datetime) -> Optional[Tuple[str, str]]:
-    if archive_dir and os.path.isfile(file_path) and (not os.path.islink(file_path)):
-        archive_file_path = os.path.join(archive_dir, archive_date.strftime('%Y_%m_%d_%H%M%S') if archive_date else '',
-                                         file_type + '-' + os.path.basename(file_path))
-        makedir(os.path.dirname(archive_file_path), 0o640)
-        os.rename(file_path, archive_file_path)
-        log.debug('Archived "%s" as "%s"', file_path, archive_file_path)
-        return file_path, archive_file_path
-    return None
+class Operation(metaclass=abc.ABCMeta):
 
-
-class FileTransaction(object):
-    __slots__ = ['file', 'temp_file_path', 'file_type', 'file_path', 'chmod', 'owner', 'timestamp', 'message']
-    tempdir = None
-
-    def __init__(self, file_type, file_path, chmod: int = None, owner: FileOwner = None, timestamp: datetime.datetime = None, mode='wb'):
-        self.file_type = file_type
-        self.file_path = file_path
-        self.timestamp = timestamp
-        self.chmod = chmod
-        self.owner = owner
-        self.message = ''
-
-        temp_fd, self.temp_file_path = tempfile.mkstemp(dir=FileTransaction.tempdir, text='b' not in mode)
-        self.file = open(temp_fd, mode)
-
-    def __del__(self):
-        if self.file:
-            self.file.close()
-            self.file = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, ty, value, traceback):
-        if self.file:
-            self.file.close()
-
-    def write(self, data):
-        self.file.write(data)
-
-    def apply(self, archive_dir: str, archive_date: datetime.datetime):
+    @abc.abstractmethod
+    def apply(self, archive_dir: Optional[str]):
         pass
 
+    @abc.abstractmethod
     def revert(self):
         pass
 
@@ -144,44 +110,154 @@ class FileTransaction(object):
         pass
 
 
-def commit_file_transactions(file_transactions: Iterable[FileTransaction], archive_dir: Optional[str] = None):
-    if not file_transactions:
+class WriteOperation(Operation):
+    __slots__ = ['file_path', 'mode', 'owner', '_buffer', '_tmp_path', '_rmdir']
+
+    def __init__(self, file_path: str, mode: int, owner: Optional[FileOwner] = None):
+        self.file_path = file_path
+        self.mode = mode
+        self.owner = owner if owner and not owner.is_self else None
+
+        self._tmp_path = None
+        self._buffer = None  # type: io.BytesIO
+        self._rmdir = False
+
+    @contextlib.contextmanager
+    def file(self, binary=True):
+        assert not self._buffer
+        self._buffer = io.BytesIO() if binary else io.StringIO()
+        # noinspection PyBroadException
+        try:
+            yield self._buffer
+        except Exception:
+            self._buffer = None
+            raise
+        else:
+            self._buffer.close()
+
+    def tmp_path(self, archive_dir: Optional[str]):
+        return tempfile.mktemp(prefix='.old-', dir=os.path.dirname(self.file_path))
+
+    def apply(self, archive_dir: Optional[str]):
+        tmp_path = self.tmp_path(archive_dir)
+        try:
+            os.makedirs(os.path.dirname(tmp_path), dirmode(self.mode or 0o700))
+            self._rmdir = True
+        except FileExistsError:
+            pass
+
+        # Move existing file out of the way
+        try:
+            os.rename(self.file_path, tmp_path)
+            self._tmp_path = tmp_path
+        except FileNotFoundError:
+            pass
+
+        if not self._buffer:
+            return
+
+        mode = 'wb' if isinstance(self._buffer, io.BytesIO) else 'w'
+        with open(self.file_path, mode) as f:
+            if self.mode:
+                try:
+                    os.fchmod(f.fileno(), self.mode)
+                except PermissionError as error:
+                    logging.warning('Unable to set file mode for "%s" to %s: %s', self.file_path, oct(self.mode), str(error))
+            if self.owner:
+                try:
+                    os.fchown(f.fileno(), self.owner.uid, self.owner.gid)
+                except PermissionError as error:
+                    logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', self.file_path, self.owner.uid, self.owner.gid, str(error))
+            # noinspection PyTypeChecker
+            f.write(self._buffer.getbuffer() if isinstance(self._buffer, io.BytesIO) else self._buffer.getvalue())
+        self._buffer = None
+
+    def revert(self):
+        try:
+            os.remove(self.file_path)
+            log.debug('%s removed', self.file_path)
+        except FileNotFoundError:
+            pass
+
+        if self._tmp_path:
+            os.rename(self._tmp_path, self.file_path)
+            log.debug('%s restored', self.file_path)
+            self._tmp_path = None
+
+    def cleanup(self):
+        if self._tmp_path:
+            try:
+                os.remove(self._tmp_path)
+            except FileNotFoundError:
+                pass
+
+            if self._rmdir:
+                try:
+                    os.removedirs(os.path.dirname(self._tmp_path))
+                except (FileNotFoundError, OSError):
+                    pass
+
+            self._tmp_path = None
+
+
+class ArchiveAndWriteOperation(WriteOperation):
+    __slots__ = ['file_type', '_archived']
+
+    def __init__(self, file_type: str, file_path: str, mode: int, owner: Optional[FileOwner] = None):
+        super().__init__(file_path, mode, owner)
+        self.file_type = file_type
+        self._archived = False
+
+    def tmp_path(self, archive_dir: Optional[str]):
+        if archive_dir:
+            self._archived = True
+            return os.path.join(archive_dir, self.file_type + '-' + os.path.basename(self.file_path))
+        # return a temporary path used to be able to revert in case of error
+        return super().tmp_path(archive_dir)
+
+    def cleanup(self):
+        # skip cleanup step if file archived (should not be removed)
+        if self._archived:
+            return
+        return super().cleanup()
+
+
+class ArchiveOperation(ArchiveAndWriteOperation):
+
+    def __init__(self, file_type: str, file_path: str):
+        super().__init__(file_type, file_path, 0, None)
+
+    def file(self):
+        raise NotImplementedError("archive operation does not support writing. Use ArchiveAndWriteOperation instead.")
+
+
+def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optional[str] = None):
+    if not operations:
         return
 
     log.debug('Committing file transaction')
-    archived_files = []
-    committed_files = []
-    # archive dir is required to commit a transaction safely
-    if archive_dir is None:
-        archive_dir = FileTransaction.tempdir
+    applied = []
     try:
         with log.prefix(" - "):
-            archive_date = datetime.datetime.now()
-            for file_transaction in file_transactions:
-                archived_file = archive_file(file_transaction.file_type, file_transaction.file_path, archive_dir, archive_date)
-                if archived_file:
-                    archived_files.append(archived_file)
-
-                file = rename_file(file_transaction.temp_file_path, file_transaction.file_path,
-                                   chmod=file_transaction.chmod, owner=file_transaction.owner, timestamp=file_transaction.timestamp)
-                committed_files.append(file)
-                log.debug("%s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
+            for op in operations:
+                op.apply(archive_dir)
+                applied.append(op)
+            # log.debug("%s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
     except Exception as e:  # restore any archived files
         log.error('File transaction error. Rolling back changes')
         with log.prefix(" - "):
-            for committed_file_path in committed_files:
+            for op in applied:
                 try:
-                    os.remove(committed_file_path)
-                    log.debug('%s removed', committed_file_path)
-                except FileNotFoundError:
-                    pass
-            for original_file_path, archived_file_path in archived_files:
-                try:
-                    os.rename(archived_file_path, original_file_path)
-                    log.debug('%s restored', original_file_path)
-                except FileNotFoundError:
-                    log.warning("%s restoration failed", original_file_path)
+                    op.revert()
+                except Exception as err:
+                    log.error("reverting operation '%s' failed: %s", str(op), str(err))
         raise e
+    else:
+        for op in applied:
+            try:
+                op.cleanup()
+            except Exception as err:
+                log.error("cleanup operation '%s' failed: %s", str(op), str(err))
 
 
 class Hooks(object):

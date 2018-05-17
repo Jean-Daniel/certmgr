@@ -11,7 +11,7 @@ import josepy
 from acme import client
 from cryptography.hazmat.primitives import serialization
 
-from certlib.utils import dirmode
+from certlib.utils import dirmode, Hooks
 from .acme import handle_authorizations
 from .config import Configuration, FileManager, CertificateSpec
 from .context import CertificateContext
@@ -208,19 +208,19 @@ class RevokeAction(Action):
                     log.warning('certificate not found')
 
         with log.prefix("  - "):
-            archive_date = datetime.datetime.now()
-            context.archive_file('param', archive_date)
+            archive_dir = self.fs.archive_dir(certificate.name)
+            context.archive_file('param', archive_dir)
             for item in revoked_certificates:
-                item.archive_file('certificate', archive_date)
-                item.archive_file('chain', archive_date)
-                item.archive_file('full_certificate', archive_date)
+                item.archive_file('certificate', archive_dir)
+                item.archive_file('chain', archive_dir)
+                item.archive_file('full_certificate', archive_dir)
 
-                item.archive_file('private_key', archive_date)
-                item.archive_file('full_key', archive_date)
+                item.archive_file('private_key', archive_dir)
+                item.archive_file('full_key', archive_dir)
 
-                item.archive_file('oscp', archive_date)
+                item.archive_file('oscp', archive_dir)
                 for ct_log in certificate.ct_submit_logs:
-                    item.archive_file('sct', archive_date, ct_log_name=ct_log.name)
+                    item.archive_file('sct', archive_dir, ct_log_name=ct_log.name)
 
 
 class AuthAction(Action):
@@ -236,8 +236,8 @@ class AuthAction(Action):
             # … and remove it from the order afterward
             order.update(csr_pem=None)
 
-            handle_authorizations(order, self.fs, self.acme_client,
-                                  self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'))
+            handle_authorizations(order, self.fs, self.acme_client, self.config.int('max_authorization_attempts'),
+                                  self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
 
 class VerifyAction(Action):
