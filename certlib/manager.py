@@ -8,7 +8,6 @@ import random
 import subprocess
 import sys
 import time
-import traceback
 from argparse import Namespace
 from typing import Iterable, Optional
 
@@ -17,16 +16,16 @@ from asn1crypto import ocsp as asn1_ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from certlib.actions import update_links
 from . import AcmeError, actions, acme
 from .acme import handle_authorizations
-from .actions import Action
-from .config import FileManager, Configuration, CertificateSpec, SCTLog
+from .actions import Action, update_links
+from .config import FileManager, Configuration
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey, load_full_chain, get_dhparam_size, get_ecparam_curve, generate_dhparam, generate_ecparam, Certificate
 from .logging import log
 from .ocsp import OCSP
-from .utils import Hooks, process_running, fetch_sct, commit_file_transactions
+from .sct import fetch_sct, SCTLog
+from .utils import ArchiveOperation, Hooks, process_running, commit_file_transactions
 from .verify import verify_certificate_installation
 
 
@@ -53,8 +52,7 @@ class UpdateAction(Action):
             self._root_certificates[key_type] = Certificate.load(cert_path)
         return self._root_certificates[key_type]
 
-    def run(self, certificate: CertificateSpec):
-        context = CertificateContext(certificate, self.fs)
+    def run(self, context: CertificateContext):
         if self.args.certs:
             self.process_certificates(context)
         if self.args.params:
@@ -67,7 +65,7 @@ class UpdateAction(Action):
         self.apply_changes(context)
         self._done.append(context)
         try:
-            update_links(certificate, self.fs)
+            update_links(context)
         except AcmeError as e:
             log.error("symlinks update error: %s", str(e))
 
@@ -81,8 +79,8 @@ class UpdateAction(Action):
                     log.debug('Generating key')
                     key = PrivateKey.create(item.type, item.params)
 
-                    log.debug('Requesting certificate for "%s" with alt names: "%s"', item.spec.common_name, ', '.join(item.spec.alt_names))
-                    csr = key.create_csr(item.spec.common_name, item.spec.alt_names, item.spec.ocsp_must_staple)
+                    log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.domain_names))
+                    csr = key.create_csr(context.common_name, context.domain_names, context.config.ocsp_must_staple)
                     order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
                     if self.args.no_auth:
                         for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
@@ -115,7 +113,7 @@ class UpdateAction(Action):
 
             # Updating dhparams
             dhparams = context.dhparams
-            dhparam_size = context.spec.dhparam_size
+            dhparam_size = context.config.dhparam_size
             if dhparams:
                 if force or not dhparam_size:
                     dhparams = None
@@ -124,7 +122,7 @@ class UpdateAction(Action):
                     dhparams = None
 
             ecparams = context.ecparams
-            ecparam_curve = context.spec.ecparam_curve
+            ecparam_curve = context.config.ecparam_curve
             if ecparams:
                 if force or not ecparam_curve:
                     ecparams = None
@@ -154,12 +152,13 @@ class UpdateAction(Action):
         if not self.fs.directory('ocsp'):
             return
 
-        # ignore ocsp if explicitly disabled for this certificate
-        if not context.spec.ocsp_responder_urls:
-            return
-
         log.info('Update OCSP Response')
         for item in context:  # type: CertificateItem
+            # ignore ocsp if explicitly disabled for this certificate
+            if not context.config.ocsp_responder_urls:
+                item.ocsp_response = None
+                continue
+
             with log.prefix('  - [{}] '.format(item.type.upper())):
                 if not item.certificate:
                     log.warning("certificate not found. Can't update OCSP response")
@@ -173,7 +172,7 @@ class UpdateAction(Action):
                 else:
                     last_update = None
 
-                ocsp_urls = (item.certificate.ocsp_urls or context.spec.ocsp_responder_urls)
+                ocsp_urls = (item.certificate.ocsp_urls or context.config.ocsp_responder_urls)
                 if not ocsp_urls:
                     log.warning('No OCSP responder URL and no default set')
                     continue
@@ -205,8 +204,8 @@ class UpdateAction(Action):
                 for ocsp_url in ocsp_urls:
                     ocsp_response = OCSP.fetch(ocsp_url, ocsp_request, last_update)
                     if ocsp_response:
-                        if 'successful' != ocsp_response.response_status.native:
-                            log.warning('OCSP request received "%s" from %s', ocsp_response.response_status.native, ocsp_url)
+                        if 'successful' != ocsp_response.response_status:
+                            log.warning('OCSP request received "%s" from %s', ocsp_response.response_status, ocsp_url)
                             continue
 
                         ocsp_status = ocsp_response.response_status
@@ -236,7 +235,7 @@ class UpdateAction(Action):
         if not self.fs.directory('sct'):
             return
 
-        if not context.spec.ct_submit_logs:
+        if not context.config.ct_submit_logs:
             return
 
         log.info('Update Signed Certificate Timestamps')
@@ -247,7 +246,7 @@ class UpdateAction(Action):
                     log.warning('certificate not found')
                     continue
 
-                for ct_log in context.spec.ct_submit_logs:  # type: SCTLog
+                for ct_log in context.config.ct_submit_logs:  # type: SCTLog
                     sct_data = fetch_sct(ct_log, item.certificate, item.chain)
                     if sct_data:
                         existing_sct_data, _ = item.sct(ct_log)
@@ -267,7 +266,7 @@ class UpdateAction(Action):
             trx = context.save_params(owner)
             if trx:
                 transactions.append(trx)
-                if trx.temp_file_path:  # FIXME: archive only transaction support
+                if trx.is_write:
                     hooks.add('params_installed', certificate_name=context.name, params_file=trx.file_path)
 
         # save private keys
@@ -285,8 +284,10 @@ class UpdateAction(Action):
                         transactions.append(trx)
                         hooks.add('full_certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
                 else:
-                    # FIXME: archive existing file
-                    pass
+                    # archive existing file
+                    path = item.filepath('full_certificate')
+                    if path:
+                        transactions.append(ArchiveOperation('certificates', path))
 
                 # Full Key
                 trx = item.save_key(owner, with_certificate=True)
@@ -306,9 +307,17 @@ class UpdateAction(Action):
                     # TODO: pass password to the hook ?
                     hooks.add('private_key_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
             else:
-                if not item.key.encrypted and item.spec.private_key.passphrase:
-                    # FIXME: rewrite private key and trash the existing file
-                    log.info("TODO: private key is not encrypted but should be")
+                if (not item.key.encrypted and item.config.private_key.passphrase) or (item.key.encrypted and not item.config.private_key.passphrase):
+                    log.info("Private key encryption configuration changed. Rewriting keys.")
+                    # Replace existing file
+                    op = item.save_key(owner, archive=False)
+                    if op:
+                        transactions.append(op)
+                        hooks.add('private_key_installed', certificate_name=item.name, key_type=item.type, file=op.file_path)
+                    op = item.save_key(owner, archive=False, with_certificate=True)
+                    if op:
+                        transactions.append(op)
+                        hooks.add('full_key_installed', certificate_name=item.name, key_type=item.type, file=op.file_path)
 
             if item.ocsp_updated:
                 trx = item.save_ocsp(owner)
@@ -316,7 +325,7 @@ class UpdateAction(Action):
                     transactions.append(trx)
                     hooks.add('ocsp_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
 
-            for ct_log in item.spec.ct_submit_logs:
+            for ct_log in item.config.ct_submit_logs:
                 sct_data, updated = item.sct(ct_log)
                 if not updated:
                     continue
@@ -327,7 +336,7 @@ class UpdateAction(Action):
         if transactions:
             try:
                 commit_file_transactions(transactions, self.fs.archive_dir(context.name))
-                self.update_services(context.spec.services)
+                self.update_services(context.config.services)
                 hooks.call()
             except Exception as e:
                 raise AcmeError('[{}] Unable to install keys and certificates', context.name) from e
@@ -489,13 +498,13 @@ class AcmeManager(object):
 
         self.config, self.fs = Configuration.load(self.args.config_path, ('.', os.path.join('/etc', self.script_name), self.script_dir))
         # update color setting
-        log.color = self.config.get('color_output')
+        log.color = self.config.bool('color_output')
 
     # def export_client_key(self, path: str):
     #     log.debug("exporting client key")
     #     client_key = self.acme_client.net.key
     #     client_key_pem = client_key.key.private_bytes(
-    #         encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
+    #         encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
     #     try:
     #         with open(path, 'wb') as f:
     #             f.write(client_key_pem)
@@ -547,11 +556,10 @@ class AcmeManager(object):
                     continue
                 try:
                     with log.prefix('[{}] '.format(cert.name)):
-                        action.run(cert)
+                        action.run(CertificateContext(cert, self.fs))
                 except AcmeError as e:
-                    log.error("[%s] processing failed. No files updated\n%s", cert.name, str(e))
-                    if self.args.debug:
-                        traceback.print_exc()
+                    log.error("[%s] processing failed. No files updated\n%s", cert.name, str(e), print_exc=True)
+
             action.finalize()
         finally:
             os.remove(pid_file_path)

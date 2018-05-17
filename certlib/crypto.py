@@ -55,7 +55,7 @@ class PrivateKey(metaclass=abc.ABCMeta):
             if isinstance(password, str):
                 password = password.encode("utf-8")
             cipher = serialization.BestAvailableEncryption(password)
-        return self._key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.TraditionalOpenSSL, encryption_algorithm=cipher)
+        return self._key.private_bytes(encoding=Encoding.PEM, format=PrivateFormat.PKCS8, encryption_algorithm=cipher)
 
     def create_csr(self, common_name: str, alt_names: Iterable[str] = (), must_staple=False) -> x509.CertificateSigningRequest:
         subject = [

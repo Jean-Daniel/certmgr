@@ -7,7 +7,7 @@
     "color_output": true,
     "key_size": 4096,
     "key_curve": "secp384r1",
-    "key_passphrase": "mypassword",
+    "key_passphrase": null,
     "dhparam_size": 512,
     "ecparam_curve": null,
     "file_user": "jddupas",
@@ -22,7 +22,7 @@
     ],
     "renewal_days": 30,
     "max_authorization_attempts": 2,
-    "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory",
+    "acme_directory_url": "https://acme-staging-v02.api.letsencrypt.org/directory",
     "verify": [ 443 ]
   },
   "directories": {
@@ -118,8 +118,7 @@
   },
   "certificates": {
     "jddupas": {
-      "common_name": "jddupas.xooloo.io",
-      "ct_submit_logs": null
+      "common_name": "jddupas.xooloo.io"
     },
     "acme2.jddupas.xooloo.io": {
       "alt_names": {

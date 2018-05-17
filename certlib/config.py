@@ -5,20 +5,22 @@ import json
 import logging
 import os
 import pwd
-import tempfile
 from collections import OrderedDict
 from typing import Iterable, Optional, Dict, Union, Tuple
 
 import collections
 
-from . import AcmeError, SUPPORTED_KEY_TYPES
+from . import AcmeError
 from .logging import log
-from .utils import get_device_id, host_in_list, FileOwner, SCTLog
+from .sct import SCTLog
+from .utils import FileOwner
 
 _KEYS_SUFFIX = {
     'rsa': '.rsa',
     'ecdsa': '.ecdsa'
 }
+
+_SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 
 
 def get_int(config: dict, key: str, default: int = 0) -> int:
@@ -32,6 +34,15 @@ def get_bool(config: dict, key: str, default: bool = False) -> bool:
 def get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
     value = config.get(key, default)
     return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (value is None) else [value]
+
+
+def _host_in_list(host_name, haystack_host_names):
+    for haystack_host_name in haystack_host_names:
+        if ((host_name == haystack_host_name)
+                or (haystack_host_name.startswith('*.') and ('.' in host_name) and (host_name.split('.', 1)[1] == haystack_host_name[2:]))
+                or (host_name.startswith('*.') and ('.' in haystack_host_name) and (haystack_host_name.split('.', 1)[1] == host_name[2:]))):
+            return haystack_host_name
+    return None
 
 
 def _get_domain_names(zone_name: str, host_names):
@@ -129,7 +140,7 @@ class CertificateSpec(object):
 
         self.key_types = spec.get('key_types', self.private_key.types)  # type: Iterable[str]
         for kt in self.key_types:
-            if kt not in SUPPORTED_KEY_TYPES:
+            if kt not in _SUPPORTED_KEY_TYPES:
                 raise AcmeError('[config] certificate {} requests unsupported key type "{}"', name, kt)
             if kt not in self.private_key.types:
                 raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', name, kt)
@@ -168,8 +179,7 @@ class FileManager(object):
         'http_challenge': None,
         'ocsp': '/etc/ssl/ocsp',
         'sct': '/etc/ssl/scts/{name}/{key_type}',
-        'archive': '/etc/ssl/archive',
-        'temp': None
+        'archive': '/etc/ssl/archive'
     }
 
     DEFAULT_FILENAMES = {
@@ -192,19 +202,10 @@ class FileManager(object):
                 dirpath = os.path.join(base, dirpath)
             directories[key] = os.path.realpath(dirpath)
 
-        temp_dir = directories.get('temp') or tempfile.gettempdir()
-        os.makedirs(temp_dir, mode=700, exist_ok=True)
-        assert os.path.exists(temp_dir)
-
-        # FIXME: properly support multi devices file transactions
-        temp_device = get_device_id(temp_dir)
-        safedirs = {'pid', 'log', 'link', 'temp'}
+        safedirs = {'pid', 'log', 'link'}
         for dirname, dirpath in directories.items():
             if not dirpath or dirname in safedirs:
                 continue
-            if get_device_id(dirpath) != temp_device:
-                raise AcmeError('[config] Temp directory must be on same device as "{}" directory', dirname)
-        FileTransaction.tempdir = temp_dir
 
         self._directories = directories
         self._filenames = filenames
@@ -386,19 +387,11 @@ class Configuration(object):
         self.path = os.path.realpath(path)
         self.account = {'email': None}
         self.settings = {
-            'mode': None,
             'log_level': 'debug',
             'color_output': True,
-            'key_size': 4096,
-            'key_curve': 'secp384r1',
-            'key_passphrase': None,
-            'dhparam_size': 2048,
-            'ecparam_curve': 'secp384r1',
             'file_user': None,
             'file_group': None,
-            'ocsp_must_staple': False,
-            'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
-            'ct_submit_logs': ['google_icarus', 'google_pilot'],
+
             'renewal_days': 30,
             'max_authorization_attempts': 30,
             'authorization_delay': 10,
@@ -408,6 +401,16 @@ class Configuration(object):
             'min_run_delay': 300,
             'max_run_delay': 3600,
             'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
+
+            # certificates default values
+            'key_size': 4096,
+            'key_curve': 'secp384r1',
+            'key_passphrase': None,
+            'dhparam_size': 2048,
+            'ecparam_curve': 'secp384r1',
+            'ocsp_must_staple': False,
+            'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
+            'ct_submit_logs': ['google_icarus', 'google_pilot'],
             'verify': None
         }
 
@@ -481,7 +484,7 @@ class Configuration(object):
 
             for v in cert.verify:
                 for host_name in v.hosts:
-                    if not host_in_list(host_name, cert.alt_names):
+                    if not _host_in_list(host_name, cert.alt_names):
                         raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
 
             self.certificates[certificate_name] = cert

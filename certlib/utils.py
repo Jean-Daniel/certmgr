@@ -1,7 +1,5 @@
 import abc
-import base64
 import contextlib
-import datetime
 import io
 import logging
 import os
@@ -9,30 +7,12 @@ import shlex
 import subprocess
 import tempfile
 from collections import OrderedDict
-from typing import Optional, Tuple, Iterable, List
+from typing import AnyStr
+from typing import Optional, Iterable
 
 import collections
-import requests
 
-from .crypto import Certificate
 from .logging import log
-
-
-def get_device_id(directory: str) -> int:
-    directory = os.path.abspath(directory)
-    while not os.path.exists(directory):
-        directory = os.path.dirname(directory)
-    return os.stat(directory).st_dev
-
-
-def host_in_list(host_name, haystack_host_names):
-    for haystack_host_name in haystack_host_names:
-        if ((host_name == haystack_host_name)
-                or (haystack_host_name.startswith('*.') and ('.' in host_name) and (host_name.split('.', 1)[1] == haystack_host_name[2:]))
-                or (host_name.startswith('*.') and ('.' in haystack_host_name) and (haystack_host_name.split('.', 1)[1] == host_name[2:]))):
-            return haystack_host_name
-    return None
-
 
 # ========= File System
 FileOwner = collections.namedtuple('FileOwner', ('uid', 'gid', 'is_self'))
@@ -46,54 +26,6 @@ def dirmode(mode: int) -> int:
     if mode & 0o007:
         mode |= 0o001
     return mode
-
-
-def makedir(dir_path: str, chmod: int = None, owner: FileOwner = None):
-    try:
-        os.makedirs(dir_path, dirmode(chmod))
-    except FileExistsError:
-        # try to guess dir mode for a file mode
-        if chmod:
-            try:
-                os.chmod(dir_path, dirmode(chmod))
-            except PermissionError as e:
-                logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
-
-    if owner and not owner.is_self:
-        try:
-            os.chown(dir_path, owner.uid, owner.gid)
-        except PermissionError as e:
-            logging.warning('Unable to set directory mode for %s: %s', dir_path, str(e))
-
-
-def open_file(file_path, mode='r', chmod=0o640):
-    def opener(path, flags):
-        return os.open(path, flags, mode=chmod)
-
-    if (('w' in mode) or ('a' in mode)) and isinstance(file_path, str):
-        makedir(os.path.dirname(file_path), chmod=chmod)
-    return open(file_path, mode, opener=opener)
-
-
-def rename_file(old_file_path: str, new_file_path: str, chmod: int = None, owner: FileOwner = None, timestamp=None) -> str:
-    makedir(os.path.dirname(new_file_path), chmod, owner)
-    os.rename(old_file_path, new_file_path)
-    if chmod:
-        try:
-            os.chmod(new_file_path, chmod)
-        except PermissionError as error:
-            logging.warning('Unable to set file mode for "%s": %s', new_file_path, str(error))
-    if timestamp:
-        try:
-            os.utime(new_file_path, (timestamp, timestamp))
-        except PermissionError as error:
-            logging.warning('Unable to set file time for "%s": %s', new_file_path, str(error))
-    if owner and not owner.is_self:
-        try:
-            os.chown(new_file_path, owner.uid, owner.gid)
-        except PermissionError as error:
-            logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', new_file_path, owner.uid, owner.gid, str(error))
-    return new_file_path
 
 
 class Operation(metaclass=abc.ABCMeta):
@@ -111,7 +43,7 @@ class Operation(metaclass=abc.ABCMeta):
 
 
 class WriteOperation(Operation):
-    __slots__ = ['file_path', 'mode', 'owner', '_buffer', '_tmp_path', '_rmdir']
+    __slots__ = ['file_path', 'mode', 'owner', '_content', '_tmp_path', '_rmdir']
 
     def __init__(self, file_path: str, mode: int, owner: Optional[FileOwner] = None):
         self.file_path = file_path
@@ -119,21 +51,17 @@ class WriteOperation(Operation):
         self.owner = owner if owner and not owner.is_self else None
 
         self._tmp_path = None
-        self._buffer = None  # type: io.BytesIO
+        self._content = None  # type: AnyStr
         self._rmdir = False
 
     @contextlib.contextmanager
     def file(self, binary=True):
-        assert not self._buffer
-        self._buffer = io.BytesIO() if binary else io.StringIO()
-        # noinspection PyBroadException
-        try:
-            yield self._buffer
-        except Exception:
-            self._buffer = None
-            raise
-        else:
-            self._buffer.close()
+        stream = io.BytesIO() if binary else io.StringIO()
+        yield stream
+        self._content = stream.getvalue()
+
+    def is_write(self) -> bool:
+        return bool(self._content)
 
     def tmp_path(self, archive_dir: Optional[str]):
         return tempfile.mktemp(prefix='.old-', dir=os.path.dirname(self.file_path))
@@ -151,12 +79,13 @@ class WriteOperation(Operation):
             os.rename(self.file_path, tmp_path)
             self._tmp_path = tmp_path
         except FileNotFoundError:
-            pass
+            if self._rmdir:
+                os.removedirs(os.path.dirname(tmp_path))
 
-        if not self._buffer:
+        if not self._content:
             return
 
-        mode = 'wb' if isinstance(self._buffer, io.BytesIO) else 'w'
+        mode = 'wb' if isinstance(self._content, bytes) else 'w'
         with open(self.file_path, mode) as f:
             if self.mode:
                 try:
@@ -168,9 +97,9 @@ class WriteOperation(Operation):
                     os.fchown(f.fileno(), self.owner.uid, self.owner.gid)
                 except PermissionError as error:
                     logging.warning('Unable to set file ownership for "%s" to %s:%s: %s', self.file_path, self.owner.uid, self.owner.gid, str(error))
-            # noinspection PyTypeChecker
-            f.write(self._buffer.getbuffer() if isinstance(self._buffer, io.BytesIO) else self._buffer.getvalue())
-        self._buffer = None
+            f.write(self._content)
+        log.debug("'%s' saved", self.file_path)
+        self._content = None
 
     def revert(self):
         try:
@@ -211,9 +140,14 @@ class ArchiveAndWriteOperation(WriteOperation):
     def tmp_path(self, archive_dir: Optional[str]):
         if archive_dir:
             self._archived = True
-            return os.path.join(archive_dir, self.file_type + '-' + os.path.basename(self.file_path))
+            return os.path.join(archive_dir, self.file_type, os.path.basename(self.file_path))
         # return a temporary path used to be able to revert in case of error
         return super().tmp_path(archive_dir)
+
+    def apply(self, archive_dir: Optional[str]):
+        super().apply(archive_dir)
+        if self._tmp_path and self._archived:
+            log.debug("'%s' archived", self.file_path)
 
     def cleanup(self):
         # skip cleanup step if file archived (should not be removed)
@@ -227,7 +161,7 @@ class ArchiveOperation(ArchiveAndWriteOperation):
     def __init__(self, file_type: str, file_path: str):
         super().__init__(file_type, file_path, 0, None)
 
-    def file(self):
+    def file(self, binary: bool = False):
         raise NotImplementedError("archive operation does not support writing. Use ArchiveAndWriteOperation instead.")
 
 
@@ -238,14 +172,14 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
     log.debug('Committing file transaction')
     applied = []
     try:
-        with log.prefix(" - "):
+        with log.prefix("  "):
             for op in operations:
                 op.apply(archive_dir)
                 applied.append(op)
             # log.debug("%s: %s", file_transaction.message or 'file saved', file_transaction.file_path)
     except Exception as e:  # restore any archived files
         log.error('File transaction error. Rolling back changes')
-        with log.prefix(" - "):
+        with log.prefix("  "):
             for op in applied:
                 try:
                     op.revert()
@@ -306,32 +240,6 @@ class Hooks(object):
 
     def _clear_hooks(self):
         self._hooks.clear()
-
-
-# SCT Support
-SCTLog = collections.namedtuple('SCTLog', ('name', 'id', 'url'))
-SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
-
-
-def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]) -> SCTData:
-    certificates = ([base64.b64encode(certificate.encode(pem=False)).decode('ascii')]
-                    + [base64.b64encode(chain_certificate.encode(pem=False)).decode('ascii') for chain_certificate in chain])
-
-    req = requests.post(ct_log.url + '/ct/v1/add-chain', json={'chain': certificates})
-    try:
-        if req.status_code == 200:
-            sct = req.json()
-            sid = sct.get('id')
-            ext = sct.get('extensions')
-            sign = sct.get('signature')
-            return SCTData(sct.get('sct_version'), base64.b64decode(sid) if sid else b'', sct.get('timestamp'),
-                           base64.b64decode(ext) if ext else b'', base64.b64decode(sign) if sign else None)
-        if 400 <= req.status_code < 500:
-            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)\n%s', ct_log.name, req.status_code, req.reason, req.content())
-        else:
-            log.warning('Unable to retrieve SCT from log %s (HTTP error: %s %s)', ct_log.name, req.status_code, req.reason)
-    except Exception as e:
-        log.warning('Unable to retrieve SCT from log %s: %s', ct_log.name, str(e))
 
 
 def process_running(pid_file_path):

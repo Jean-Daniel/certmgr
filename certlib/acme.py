@@ -18,7 +18,7 @@ from certlib.utils import ArchiveAndWriteOperation
 from . import AcmeError
 from .config import FileManager
 from .logging import log
-from .utils import open_file, makedir, commit_file_transactions, Hooks
+from .utils import commit_file_transactions, Hooks
 
 
 def _user_agent():
@@ -31,8 +31,8 @@ def _generate_client_key():
 
 
 def connect_client(resource_dir: str, account: str, directory_url: str, archive_dir: Optional[str]) -> client.ClientV2:
-    makedir(resource_dir, 0o600)
     generated_client_key = False
+    os.makedirs(resource_dir, 0o700, exist_ok=True)
     client_key_path = os.path.join(resource_dir, 'client_key.json')
     try:
         with open(client_key_path) as f:
@@ -94,14 +94,14 @@ def connect_client(resource_dir: str, account: str, directory_url: str, archive_
 
     transactions = []
     if generated_client_key:
-        op = ArchiveAndWriteOperation('client', client_key_path, mode=0o600)
+        op = ArchiveAndWriteOperation('resource', client_key_path, mode=0o600)
         with op.file(binary=False) as f:
             json.dump(client_key.fields_to_partial_json(), f)
         # op.message = 'Saved client key'
         transactions.append(op)
 
-    op = ArchiveAndWriteOperation('registration', registration_path, mode=0o600)
-    with op.file() as f:
+    op = ArchiveAndWriteOperation('resource', registration_path, mode=0o600)
+    with op.file(binary=False) as f:
         f.write(registration.json_dumps())
     # op.message = 'Saved registration'
     transactions.append(op)
@@ -154,8 +154,10 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
         challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
         log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
         try:
-            with open_file(challenge_file_path, 'w', 0o644) as f:
+            with open(challenge_file_path, 'w') as f:
                 f.write(challenge.validation(acme_client.net.key))
+                os.fchmod(f.fileno(), 0o644)
+
             challenge_http_responses[domain_name] = challenge_file_path
             hooks.add('set_http_challenge', domain=domain_name, file=challenge_file_path)
         except Exception as error:

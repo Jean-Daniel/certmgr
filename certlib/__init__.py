@@ -1,7 +1,5 @@
 # certlib module
 
-SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
-
 
 class AcmeError(Exception):
 

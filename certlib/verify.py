@@ -163,10 +163,10 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
     ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
     ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
     all_ciphers = ssl_sock.get_cipher_list()
-    for key_type in context.spec.key_types:
-        key_type_ciphers[key_type] = ':'.join([cipher_name for cipher_name in all_ciphers if key_type.upper() in cipher_name]).encode('ascii')
+    for item in context:
+        key_type_ciphers[item.type] = ':'.join([cipher_name for cipher_name in all_ciphers if item.type.upper() in cipher_name]).encode('ascii')
 
-    verify_list = context.spec.verify
+    verify_list = context.config.verify
     if not verify_list:
         return
 
@@ -184,6 +184,6 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
         for verify in verify_list:
             if verify.key_types and item.type not in verify.key_types:
                 continue
-            for host_name in verify.hosts or context.spec.alt_names:
+            for host_name in verify.hosts or context.domain_names:
                 _verify_certificate_installation(item, host_name, verify.port, verify.starttls, key_type_ciphers[item.type],
                                                  max_ocsp_verify_attempts, ocsp_verify_retry_delay)

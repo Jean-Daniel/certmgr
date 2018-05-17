@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import sys
+import traceback
 from typing import Optional
 
 
@@ -125,6 +126,46 @@ class _Logger(logging.LoggerAdapter):
         else:
             self._stream.setFormatter(_Formatter())
         self.logger.addHandler(self._stream)
+
+    def debug(self, msg, *args, print_exc: bool = False, **kwargs):
+        """
+        Delegate a debug call to the underlying logger.
+        """
+        super().debug(msg, *args, **kwargs)
+        if print_exc:
+            traceback.print_exc()
+
+    def info(self, msg, *args, print_exc: bool = False, **kwargs):
+        """
+        Delegate an info call to the underlying logger.
+        """
+        super().info(msg, *args, **kwargs)
+        if print_exc and self.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
+
+    def warning(self, msg, *args, print_exc: bool = False, **kwargs):
+        """
+        Delegate a warning call to the underlying logger.
+        """
+        super().warning(msg, *args, **kwargs)
+        if print_exc and self.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
+
+    def error(self, msg, *args, print_exc: bool = False, **kwargs):
+        """
+        Delegate an error call to the underlying logger.
+        """
+        super().error(msg, *args, **kwargs)
+        if print_exc and self.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
+
+    def critical(self, msg, *args, print_exc: bool = False, **kwargs):
+        """
+        Delegate a critical call to the underlying logger.
+        """
+        super().critical(msg, *args, **kwargs)
+        if print_exc and self.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
 
 
 log = _Logger(logging.getLogger("certmgr"))
