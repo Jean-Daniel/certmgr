@@ -27,7 +27,7 @@ from .crypto import PrivateKey, load_full_chain, get_dhparam_size, get_ecparam_c
 from .logging import log
 from .ocsp import OCSP
 from .sct import fetch_sct, SCTLog
-from .utils import ArchiveOperation, Hooks, process_running, commit_file_transactions
+from .utils import ArchiveOperation, Hooks, commit_file_transactions
 from .verify import verify_certificate_installation
 
 
@@ -566,7 +566,6 @@ class AcmeManager(object):
                     raise AcmeError('Client already running')
 
             with contextlib.closing(lock_file):
-                time.sleep(10)
                 self._run()
         else:
             # not lock path specified.

@@ -11,9 +11,8 @@ import collections
 import josepy
 import pkg_resources
 from acme import messages, client
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import rsa
 
+from certlib.crypto import PrivateKey
 from certlib.utils import ArchiveAndWriteOperation
 from . import AcmeError
 from .config import FileManager
@@ -26,25 +25,10 @@ def _user_agent():
     return 'certmgr/1.0.0 acme-python/{acme_version}'.format(acme_version=acmelib.version if acmelib else "0.0.0")
 
 
-def _generate_client_key():
-    return josepy.JWKRSA(key=rsa.generate_private_key(public_exponent=65537, key_size=4096, backend=default_backend()))
-
-
 def connect_client(resource_dir: str, account: str, directory_url: str, archive_dir: Optional[str]) -> client.ClientV2:
-    generated_client_key = False
-    os.makedirs(resource_dir, 0o700, exist_ok=True)
-    client_key_path = os.path.join(resource_dir, 'client_key.json')
-    try:
-        with open(client_key_path) as f:
-            client_key = josepy.JWKRSA.fields_from_json(json.load(f))
-        log.debug('Loaded client key %s', client_key_path)
-    except FileNotFoundError:
-        log.info('Client key not present, generating')
-        client_key = _generate_client_key()
-        generated_client_key = True
-
     registration = None
     registration_path = os.path.join(resource_dir, 'registration.json')
+    registration_updated = False
     try:
         with open(registration_path) as f:
             registration = messages.RegistrationResource.json_loads(f.read())
@@ -54,11 +38,25 @@ def connect_client(resource_dir: str, account: str, directory_url: str, archive_
             if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
                 log.info('ACME service URL has changed, re-registering with new client key')
                 registration = None
-                # ACME-ISSUE Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
-                client_key = _generate_client_key()
-                generated_client_key = True
     except FileNotFoundError:
         pass
+
+    client_key = None
+    client_key_path = os.path.join(resource_dir, 'client_key.json')
+    # ACME-ISSUE: Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
+    if registration:
+        try:
+            with open(client_key_path) as f:
+                client_key = josepy.JWKRSA.fields_from_json(json.load(f))
+            log.debug('Loaded client key %s', client_key_path)
+        except FileNotFoundError:
+            log.info('Client key not present, generating')
+            registration = None
+
+    client_key_updated = False
+    if not client_key:
+        client_key = josepy.JWKRSA(key=PrivateKey.create('rsa', 4096).key)
+        client_key_updated = True
 
     try:
         net = client.ClientNetwork(client_key, account=registration, user_agent=_user_agent())
@@ -68,47 +66,49 @@ def connect_client(resource_dir: str, account: str, directory_url: str, archive_
     except Exception as error:
         raise AcmeError("Can't connect to ACME service") from error
 
-    if registration:
-        return acme_client
+    if not registration:
+        log.info('Registering client')
+        try:
+            reg = messages.NewRegistration.from_data(email=account)
+            if "terms_of_service" in acme_client.directory.meta:
+                tos = acme_client.directory.meta.terms_of_service
+                if sys.stdin.isatty():
+                    sys.stdout.write('ACME service has the following terms of service:\n')
+                    sys.stdout.write(tos)
+                    sys.stdout.write('\n')
+                    answer = input('Accept? (Y/n) ')
+                    if answer and not answer.lower().startswith('y'):
+                        raise Exception('Terms of service rejected.')
+                    log.debug('Terms of service accepted.')
+                else:
+                    log.debug('Terms of service auto-accepted: %s', tos)
+                reg = reg.update(terms_of_service_agreed=True)
 
-    log.info('Registering client')
-    try:
-        reg = messages.NewRegistration.from_data(email=account)
-        if "terms_of_service" in acme_client.directory.meta:
-            tos = acme_client.directory.meta.terms_of_service
-            if sys.stdin.isatty():
-                sys.stdout.write('ACME service has the following terms of service:\n')
-                sys.stdout.write(tos)
-                sys.stdout.write('\n')
-                answer = input('Accept? (Y/n) ')
-                if answer and not answer.lower().startswith('y'):
-                    raise Exception('Terms of service rejected.')
-                log.debug('Terms of service accepted.')
-            else:
-                log.debug('Terms of service auto-accepted: %s', tos)
-            reg = reg.update(terms_of_service_agreed=True)
-
-        registration = acme_client.new_account(reg)
-    except Exception as error:
-        raise AcmeError("Can't register with ACME service") from error
+            registration = acme_client.new_account(reg)
+            registration_updated = True
+        except Exception as error:
+            raise AcmeError("Can't register with ACME service") from error
 
     transactions = []
-    if generated_client_key:
+    if client_key_updated:
         op = ArchiveAndWriteOperation('resource', client_key_path, mode=0o600)
         with op.file(binary=False) as f:
             json.dump(client_key.fields_to_partial_json(), f)
         # op.message = 'Saved client key'
         transactions.append(op)
 
-    op = ArchiveAndWriteOperation('resource', registration_path, mode=0o600)
-    with op.file(binary=False) as f:
-        f.write(registration.json_dumps())
-    # op.message = 'Saved registration'
-    transactions.append(op)
-    try:
-        commit_file_transactions(transactions, archive_dir)
-    except Exception as e:
-        raise AcmeError('Unable to save registration to {}', registration_path) from e
+    if registration_updated:
+        op = ArchiveAndWriteOperation('resource', registration_path, mode=0o600)
+        with op.file(binary=False) as f:
+            f.write(registration.json_dumps())
+        # op.message = 'Saved registration'
+        transactions.append(op)
+
+    if transactions:
+        try:
+            commit_file_transactions(transactions, archive_dir)
+        except Exception as e:
+            raise AcmeError('Unable to save registration to {}', registration_path) from e
 
     return acme_client
 

@@ -31,6 +31,10 @@ class PrivateKey(metaclass=abc.ABCMeta):
         self.encrypted = encrypted
 
     @property
+    def key(self):
+        return self._key
+
+    @property
     @abc.abstractmethod
     def key_type(self) -> str:
         raise NotImplementedError()
