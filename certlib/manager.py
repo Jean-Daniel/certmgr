@@ -97,6 +97,8 @@ class UpdateAction(Action):
                     try:
                         order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))
                         certificate, chain = load_full_chain(order.fullchain_pem.encode('ascii'))
+                        if not certificate or not chain:
+                            raise AcmeError("Certificate generation failed. Missing certificate or chain in response.")
                         item.update(key, certificate, chain)
                     except Exception as e:
                         raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
