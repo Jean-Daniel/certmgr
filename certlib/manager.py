@@ -345,12 +345,9 @@ class UpdateAction(Action):
                     transactions.append(trx)
                     hooks.add('sct_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path, ct_log_name=ct_log.name)
         if transactions:
-            try:
-                commit_file_transactions(transactions, self.fs.archive_dir(context.name))
-                self.update_services(context.config.services)
-                hooks.call()
-            except Exception as e:
-                raise AcmeError('[{}] Unable to install keys and certificates', context.name) from e
+            commit_file_transactions(transactions, self.fs.archive_dir(context.name))
+            self.update_services(context.config.services)
+            hooks.call()
 
     def finalize(self):
         # Call hook usefull to sync status with other hosts
@@ -486,11 +483,6 @@ class AcmeManager(object):
         #                        action='store_true', dest='fast_dhparams', default=False,
         #                        help='Using 2ton.com.au online generator to get dhparams instead of generating them locally')
 
-        # # Misc options
-        # argparser.add_argument('--export-client',
-        #                        dest='export_key_path', default=False, help='Export client key')
-        #
-
         self.args = argparser.parse_args()
         if not getattr(self.args, 'cls', None):
             self.args = argparser.parse_args(sys.argv[1:] + ['update'])
@@ -510,23 +502,12 @@ class AcmeManager(object):
         # update color setting
         log.color = self.config.bool('color_output')
 
-    # def export_client_key(self, path: str):
-    #     log.debug("exporting client key")
-    #     client_key = self.acme_client.net.key
-    #     client_key_pem = client_key.key.private_bytes(
-    #         encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
-    #     try:
-    #         with open(path, 'wb') as f:
-    #             f.write(client_key_pem)
-    #             logging.info('Client key exported to "%s"', path)
-    #     except Exception as error:
-    #         logging.error('Unbale to write client key to "%s": %s', path, str(error))
-
     def connect_client(self) -> client.ClientV2:
         resource_dir = os.path.join(self.script_dir, self.fs.directory('resource'))
         archive_dir = self.fs.archive_dir('client')
         with log.prefix('[acme] '):
-            return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'), archive_dir)
+            return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'),
+                                       self.config.account.get('passphrase'), archive_dir)
 
     def _run(self):
         acme_client = None

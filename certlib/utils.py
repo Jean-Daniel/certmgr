@@ -1,10 +1,12 @@
 import abc
 import contextlib
+import getpass
 import io
 import logging
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 from typing import AnyStr, Dict, List
 from typing import Optional, Iterable
@@ -186,7 +188,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
                     op.revert()
                 except Exception as err:
                     log.error("reverting operation '%s' failed: %s", str(op), str(err))
-        raise e
+        raise AcmeError("transaction failed") from e
     else:
         for op in applied:
             try:
@@ -195,6 +197,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
                 log.error("cleanup operation '%s' failed: %s", str(op), str(err))
 
 
+# ======= Hooks Management
 class Hook(object):
     __slots__ = ('name', 'args', 'cwd')
 
@@ -258,3 +261,20 @@ class Hooks(object):
 
     def _clear_hooks(self):
         self._hooks.clear()
+
+
+# ======== Miscs
+KeyCipherData = collections.namedtuple('KeyCipherData', ['passphrase', 'forced'])
+
+
+def get_key_cipher(name, passphrase, force_prompt) -> Optional[KeyCipherData]:
+    forced = not bool(passphrase)
+    if (passphrase is True) or (not passphrase and force_prompt):
+        passphrase = os.getenv('{cert}_PASSPHRASE'.format(cert=name.replace('.', '_').upper()))
+        if not passphrase:
+            if sys.stdin.isatty():
+                passphrase = getpass.getpass('Enter private key password for {name}: '.format(name=name))
+            else:
+                passphrase = sys.stdin.readline().strip()
+        # TODO: what to do if no passphrase at this point ?
+    return KeyCipherData(passphrase.encode("utf-8"), forced) if passphrase else None

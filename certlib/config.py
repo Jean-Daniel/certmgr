@@ -398,7 +398,7 @@ class Configuration(object):
     def __init__(self, path: str):
         self.path = os.path.realpath(path)
         self.hooks = dict(_DEFAULT_HOOKS)  # type: Dict[str, Optional[List[Hook]]]
-        self.account = {'email': None}
+        self.account = {'email': None, 'passphrase': None}
         self.settings = {
             'log_level': 'debug',
             'color_output': True,

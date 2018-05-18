@@ -92,22 +92,29 @@ class PrivateKey(metaclass=abc.ABCMeta):
         try:
             with open(key_file, 'rb') as f:
                 key_pem = f.read()
-            pwd = None
-            if b'-----BEGIN ENCRYPTED PRIVATE KEY-----' in key_pem:
-                pwd = password() if callable(password) else password
-                if isinstance(pwd, str):
-                    pwd = pwd.encode('utf-8')
-
-            key = serialization.load_pem_private_key(key_pem, pwd, default_backend())
-            if isinstance(key, rsa.RSAPrivateKey):
-                assert isinstance(key, rsa.RSAPrivateKeyWithSerialization)
-                return _RSAKey(key, pwd is not None)
-            if isinstance(key, ec.EllipticCurvePrivateKey):
-                assert isinstance(key, ec.EllipticCurvePrivateKeyWithSerialization)
-                return _ECDSAKey(key, pwd is not None)
-            raise NotImplementedError("Unsupported key type: " + key.__class__)
         except FileNotFoundError:
             return None
+        # load_pem raise an error if we pass a password to a non encrypted key.
+        # Moreover we don't want to prompt the user for a password if not needed.
+        # So we have to detect if a password is needed.
+        pwd = None
+        if b'-----BEGIN ENCRYPTED PRIVATE KEY-----' in key_pem:
+            pwd = password() if callable(password) else password
+            if isinstance(pwd, str):
+                pwd = pwd.encode('utf-8')
+
+        key = serialization.load_pem_private_key(key_pem, pwd, default_backend())
+        return PrivateKey.from_key(key, pwd is not None)
+
+    @staticmethod
+    def from_key(key: Union[rsa.RSAPrivateKeyWithSerialization, ec.EllipticCurvePrivateKeyWithSerialization], encrypted: bool = False) -> 'PrivateKey':
+        if isinstance(key, rsa.RSAPrivateKey):
+            assert isinstance(key, rsa.RSAPrivateKeyWithSerialization)
+            return _RSAKey(key, encrypted)
+        if isinstance(key, ec.EllipticCurvePrivateKey):
+            assert isinstance(key, ec.EllipticCurvePrivateKeyWithSerialization)
+            return _ECDSAKey(key, encrypted)
+        raise NotImplementedError("Unsupported key type: " + str(key.__class__))
 
 
 class _RSAKey(PrivateKey):

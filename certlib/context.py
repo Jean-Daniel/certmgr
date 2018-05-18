@@ -1,22 +1,16 @@
 import datetime
-import getpass
-import os
 import re
 import struct
-import sys
 from typing import Optional, List, Tuple
 
-import collections
-
+from certlib.utils import get_key_cipher
 from . import AcmeError
 from .config import CertificateSpec, FileManager
 from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log
 from .ocsp import OCSP
 from .sct import SCTLog, SCTData
-from .utils import ArchiveAndWriteOperation, WriteOperation, FileOwner
-
-KeyCipherData = collections.namedtuple('KeyCipherData', ['passphrase', 'forced'])
+from .utils import ArchiveAndWriteOperation, WriteOperation, FileOwner, KeyCipherData
 
 _UNINITIALIZED = 'uninitialized'
 
@@ -272,7 +266,7 @@ class CertificateContext(object):
         self._items = [CertificateItem(key_type, pkey.params(key_type), self) for key_type in config.key_types]  # type: List[CertificateItem]
 
         self._transactions = []
-        self._key_cipher = None  # type: Optional[KeyCipherData]
+        self._key_cipher = _UNINITIALIZED  # type: Optional[KeyCipherData]
 
     def __iter__(self):
         return self._items.__iter__()
@@ -336,20 +330,9 @@ class CertificateContext(object):
         return self.config.alt_names
 
     def key_cipher(self, force_prompt=False) -> Optional[KeyCipherData]:
-        if self._key_cipher:
-            return self._key_cipher if self._key_cipher.passphrase else None
-
-        passphrase = self.config.private_key.passphrase
-        if (passphrase is True) or (force_prompt and not passphrase):
-            passphrase = os.getenv('{cert}_PASSPHRASE'.format(cert=self.name.replace('.', '_').upper()))
-            if not passphrase:
-                if sys.stdin.isatty():
-                    passphrase = getpass.getpass('Enter private key password for {name}: '.format(name=self.name))
-                else:
-                    passphrase = sys.stdin.readline().strip()
-            # TODO: what to do if no passphrase at this point ?
-        self._key_cipher = KeyCipherData(passphrase.encode("utf-8"), force_prompt) if passphrase else KeyCipherData(None, False)
-        return self._key_cipher if self._key_cipher.passphrase else None
+        if self._key_cipher is _UNINITIALIZED:
+            self._key_cipher = get_key_cipher(self.name, self.config.private_key.passphrase, force_prompt)
+        return self._key_cipher
 
     def _load_params(self):
         self._dhparams = self._ecparams = None
