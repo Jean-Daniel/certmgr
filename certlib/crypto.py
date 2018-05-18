@@ -63,7 +63,7 @@ class PrivateKey(metaclass=abc.ABCMeta):
 
     def create_csr(self, common_name: str, alt_names: Iterable[str] = (), must_staple=False) -> x509.CertificateSigningRequest:
         subject = [
-            # TODO: try to set other fields
+            # letencrypt ignores all other fields.
             x509.NameAttribute(x509.NameOID.COMMON_NAME, common_name)
         ]
         req = x509.CertificateSigningRequestBuilder(x509.Name(subject))
@@ -213,9 +213,6 @@ class Certificate(object):
         if ext:
             return any(feature == x509.TLSFeatureType.status_request for feature in ext)
         return False
-
-    # def digest(self, digest='sha256') -> str:
-    #    return self._cert.digest(digest).decode('ascii').replace(':', '').lower()
 
     @staticmethod
     def load(cert_file: str) -> Optional['Certificate']:

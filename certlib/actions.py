@@ -10,14 +10,13 @@ import josepy
 from acme import client
 from cryptography.hazmat.primitives import serialization
 
-from certlib.context import CertificateItem
-from certlib.utils import ArchiveOperation, commit_file_transactions
 from .acme import handle_authorizations
 from .config import Configuration, FileManager
 from .context import CertificateContext
+from .context import CertificateItem
 from .crypto import PrivateKey
 from .logging import log
-from .utils import dirmode, Hooks
+from .utils import ArchiveOperation, commit_file_transactions, dirmode, Hooks
 from .verify import verify_certificate_installation
 
 

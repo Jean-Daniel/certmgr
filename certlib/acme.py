@@ -12,12 +12,11 @@ import josepy
 import pkg_resources
 from acme import messages, client
 
-from certlib.crypto import PrivateKey
-from certlib.utils import ArchiveAndWriteOperation
 from . import AcmeError
 from .config import FileManager
+from .crypto import PrivateKey
 from .logging import log
-from .utils import commit_file_transactions, Hooks
+from .utils import ArchiveAndWriteOperation, commit_file_transactions, Hooks
 
 
 def _user_agent():

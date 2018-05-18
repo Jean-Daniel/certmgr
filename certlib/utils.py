@@ -6,12 +6,12 @@ import os
 import shlex
 import subprocess
 import tempfile
-from collections import OrderedDict
-from typing import AnyStr
+from typing import AnyStr, Dict, List
 from typing import Optional, Iterable
 
 import collections
 
+from . import AcmeError
 from .logging import log
 
 # ========= File System
@@ -195,11 +195,52 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
                 log.error("cleanup operation '%s' failed: %s", str(op), str(err))
 
 
+class Hook(object):
+    __slots__ = ('name', 'args', 'cwd')
+
+    def __init__(self, name, spec):
+        self.name = name
+        self.cwd = None
+        if isinstance(spec, str):
+            self.args = shlex.split(spec)
+        elif isinstance(spec, dict):
+            self.args = spec.get('args')
+            self.cwd = spec.get('cwd')
+            # TODO: add support for env, …
+        else:
+            raise AcmeError("[config:hooks:{}] hook must be either a command line string, or a dictionary".format(name))
+
+        if not self.args:
+            raise AcmeError("[config:hooks:{}] arguments must not be empty".format(name))
+
+    def execute(self, **kwargs):
+        args = None
+        try:
+            args = [arg.format(**kwargs) for arg in self.args]
+            log.info('Calling hook %s: %s', self.name, args)
+            # TODO: add support for env, …
+            output = subprocess.check_output(args, cwd=self.cwd, stderr=subprocess.STDOUT, shell=False)
+            if output:
+                try:
+                    output = output.decode('utf-8')
+                except UnicodeEncodeError:
+                    pass
+                log.info("-> %s", output)
+            else:
+                log.info(" - OK")
+        except KeyError as e:
+            log.warning('Invalid hook specification for "%s": unknown key {%s}', self.name, e)
+        except subprocess.CalledProcessError as e:
+            log.warning('Hook %s returned error, code: %s:\n%s', self.name, e.returncode, e.output)
+        except Exception as e:
+            log.warning('Failed to call hook %s (%s): %s', self.name, args, str(e))
+
+
 class Hooks(object):
 
-    def __init__(self, commands: dict):
-        self._hooks = OrderedDict()
-        self._commands = commands
+    def __init__(self, commands: Dict[str, Optional[List[Hook]]]):
+        self._hooks = []
+        self._commands = commands  # type: Dict[str, Optional[List[Hook]]]
 
     # Hook Management
     def add(self, hook_name: str, **kwargs):
@@ -207,36 +248,12 @@ class Hooks(object):
         if not hooks:
             return
 
-        if hook_name not in self._hooks:
-            self._hooks[hook_name] = []
-
-        # Hook take an array of commands, or a single command
-        if isinstance(hooks, (str, dict)):
-            hooks = (hooks,)
-        try:
-            for hook in hooks:
-                if isinstance(hook, str):
-                    hook = {
-                        'args': shlex.split(hook)
-                    }
-                else:
-                    hook = hook.copy()
-                hook['args'] = [arg.format(**kwargs) for arg in hook['args']]
-                self._hooks[hook_name].append(hook)
-        except KeyError as e:
-            log.warning('Invalid hook specification for %s, unknown key %s', hook_name, e)
+        self._hooks.append((hooks, kwargs))
 
     def call(self):
-        for hook_name, hooks in self._hooks.items():
+        for hooks, kwargs in self._hooks:
             for hook in hooks:
-                try:
-                    log.info('Calling hook %s: %s', hook_name, hook['args'])
-                    # TODO: add support for cwd, env, …
-                    log.info(subprocess.check_output(hook['args'], stderr=subprocess.STDOUT, shell=False))
-                except subprocess.CalledProcessError as error:
-                    log.warning('Hook %s returned error, code: %s:\n%s', hook_name, error.returncode, error.output)
-                except Exception as e:
-                    log.warning('Failed to call hook %s (%s): %s', hook_name, hook['args'], str(e))
+                hook.execute(**kwargs)
         self._clear_hooks()
 
     def _clear_hooks(self):

@@ -6,14 +6,14 @@ import logging
 import os
 import pwd
 from collections import OrderedDict
-from typing import Iterable, Optional, Dict, Union, Tuple
+from typing import Iterable, Optional, Dict, Union, Tuple, List
 
 import collections
 
 from . import AcmeError
 from .logging import log
 from .sct import SCTLog
-from .utils import FileOwner
+from .utils import FileOwner, Hook
 
 _SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 
@@ -256,6 +256,20 @@ def configure_logger(level: Optional[str], fs: FileManager):
         log.set_file(fs.filepath('log'), levels[level])
 
 
+_DEFAULT_HOOKS = {
+    'set_http_challenge': None,
+    'clear_http_challenge': None,
+    'private_key_installed': None,
+    'certificate_installed': None,
+    'full_certificate_installed': None,
+    'chain_installed': None,
+    'full_key_installed': None,
+    'params_installed': None,
+    'sct_installed': None,
+    'ocsp_installed': None,
+    'certificates_updated': None
+}
+
 _DEFAULT_CT_LOGS = {
     'google_pilot': {
         'url': 'https://ct.googleapis.com/pilot',
@@ -361,7 +375,8 @@ class Configuration(object):
                     # for logging purpose only
                     _check('file_names', FileManager.DEFAULT_FILENAMES, values)
                 elif section == 'hooks':
-                    _merge('hooks', cfg.hooks, values)
+                    _check('hooks', _DEFAULT_HOOKS, values)
+                    cfg._parse_hooks(values)
                 elif section == 'services':
                     _merge('services', cfg.services, values, check=False)
                 elif section == 'ct_logs':
@@ -382,6 +397,7 @@ class Configuration(object):
 
     def __init__(self, path: str):
         self.path = os.path.realpath(path)
+        self.hooks = dict(_DEFAULT_HOOKS)  # type: Dict[str, Optional[List[Hook]]]
         self.account = {'email': None}
         self.settings = {
             'log_level': 'debug',
@@ -411,19 +427,6 @@ class Configuration(object):
             'verify': None
         }
 
-        self.hooks = {
-            'set_http_challenge': None,
-            'clear_http_challenge': None,
-            'private_key_installed': None,
-            'certificate_installed': None,
-            'full_certificate_installed': None,
-            'chain_installed': None,
-            'full_key_installed': None,
-            'params_installed': None,
-            'sct_installed': None,
-            'ocsp_installed': None,
-            'certificates_updated': None
-        }
         self.services = {
             'apache': 'systemctl reload apache2',
             'coturn': 'systemctl restart coturn',
@@ -485,3 +488,12 @@ class Configuration(object):
                         raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
 
             self.certificates[certificate_name] = cert
+
+    def _parse_hooks(self, values: dict):
+        for name, spec in values.items():
+            if isinstance(spec, list):
+                hooks = [Hook(name, item) for item in spec]
+            else:
+                hooks = [Hook(name, spec)]
+
+            self.hooks[name] = hooks
