@@ -1,5 +1,7 @@
 import argparse
+import contextlib
 import datetime
+import fcntl
 import hashlib
 import json
 import logging
@@ -517,9 +519,28 @@ class AcmeManager(object):
         with log.prefix('[acme] '):
             return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'), archive_dir)
 
+    def _run(self):
+        acme_client = None
+        cls = self.args.cls
+        if cls.has_acme_client:
+            acme_client = self.connect_client()
+        action = cls(self.config, self.fs, self.args, acme_client)
+        for certificate_name in self.args.certificate_names or self.config.certificates.keys():
+            cert = self.config.certificates.get(certificate_name)
+            if not cert:
+                log.warning("requested certificate '%s' does not exists in config", certificate_name)
+                continue
+            try:
+                with log.prefix('[{}] '.format(cert.name)):
+                    action.run(CertificateContext(cert, self.fs))
+            except AcmeError as e:
+                log.error("[%s] processing failed. No files updated\n%s", cert.name, str(e), print_exc=True)
+
+        action.finalize()
+
     def run(self):
         log.info('\n----- %s executed at %s', self.script_name, str(datetime.datetime.now()))
-        pid_file_path = os.path.join(self.fs.directory('pid'), self.script_name + '.pid')
+        lock_path = self.fs.filepath('lock')
         if self.args.random_wait:
             delay_seconds = min(random.randrange(min(self.config.int('min_run_delay'), self.config.int('max_run_delay')),
                                                  max(self.config.int('min_run_delay'), self.config.int('max_run_delay'))), 86400)
@@ -533,35 +554,31 @@ class AcmeManager(object):
                       _plural(int(delay_seconds / 3600), 'hour'), _plural(int((delay_seconds % 3600) / 60), 'minute'),
                       _plural((delay_seconds % 60), 'second'))
             time.sleep(delay_seconds)
-            if process_running(pid_file_path):
-                log.debug('Waiting for other running client instance')
-                while process_running(pid_file_path):
-                    time.sleep(random.randrange(5, 30))
-        else:
-            if process_running(pid_file_path):
-                log.error('Client already running')
-        with open(pid_file_path, 'w') as pid_file:
-            pid_file.write(str(os.getpid()))
-        try:
-            acme_client = None
-            cls = self.args.cls
-            if cls.has_acme_client:
-                acme_client = self.connect_client()
-            action = cls(self.config, self.fs, self.args, acme_client)
-            for certificate_name in self.args.certificate_names or self.config.certificates.keys():
-                cert = self.config.certificates.get(certificate_name)
-                if not cert:
-                    log.warning("requested certificate '%s' does not exists in config", certificate_name)
-                    continue
-                try:
-                    with log.prefix('[{}] '.format(cert.name)):
-                        action.run(CertificateContext(cert, self.fs))
-                except AcmeError as e:
-                    log.error("[%s] processing failed. No files updated\n%s", cert.name, str(e), print_exc=True)
+        if lock_path:
+            lock_file = open(lock_path, 'wb')
 
-            action.finalize()
-        finally:
-            os.remove(pid_file_path)
+            if not try_lock(lock_file):
+                if self.args.random_wait:
+                    log.debug('Waiting for other running client instance')
+                    while not try_lock(lock_file):
+                        time.sleep(random.randrange(5, 30))
+                else:
+                    raise AcmeError('Client already running')
+
+            with contextlib.closing(lock_file):
+                time.sleep(10)
+                self._run()
+        else:
+            # not lock path specified.
+            self._run()
+
+
+def try_lock(lock_file) -> bool:
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
 
 
 def debug_hook(ty, value, tb):

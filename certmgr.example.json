@@ -26,8 +26,8 @@
         "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory"
     },
     "directories": {
-        "pid": "/var/run",
         "log": "/var/log/certmgr",
+        "lock": "/var/run",
         "resource": "/var/local/certmgr",
         "private_key": "/etc/ssl/private",
         "full_key": "/etc/ssl/private",
@@ -43,6 +43,7 @@
     },
     "file_names": {
         "log": "certmgr.log",
+        "lock": "certmgr.lock",
         "private_key": "{name}{suffix}.key",
         "full_key": "{name}_full{suffix}.key",
         "certificate": "{name}{suffix}.pem",

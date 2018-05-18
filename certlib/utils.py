@@ -240,12 +240,3 @@ class Hooks(object):
 
     def _clear_hooks(self):
         self._hooks.clear()
-
-
-def process_running(pid_file_path):
-    try:
-        with open(pid_file_path) as pid_file:
-            return -1 < os.getsid(int(pid_file.read()))
-    except Exception:
-        pass
-    return False

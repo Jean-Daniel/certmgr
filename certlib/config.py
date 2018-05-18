@@ -15,11 +15,6 @@ from .logging import log
 from .sct import SCTLog
 from .utils import FileOwner
 
-_KEYS_SUFFIX = {
-    'rsa': '.rsa',
-    'ecdsa': '.ecdsa'
-}
-
 _SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 
 
@@ -166,7 +161,7 @@ class CertificateSpec(object):
 
 class FileManager(object):
     DEFAULT_DIRECTORIES = {
-        'pid': '/var/run',
+        'lock': '/var/run',
         'log': '/var/log/certmgr',
         'link': None,
         'resource': '/var/local/certmgr',
@@ -183,6 +178,7 @@ class FileManager(object):
     }
 
     DEFAULT_FILENAMES = {
+        'lock': 'certmgr.lock',
         'log': 'certmgr.log',
         'private_key': '{name}{suffix}.key',
         'full_key': '{name}_full{suffix}.key',
@@ -214,11 +210,13 @@ class FileManager(object):
     def filename(self, file_type: str) -> Optional[str]:
         return self._filenames.get(file_type)
 
-    def filepath(self, file_type, file_name, key_type=None, **kwargs) -> str:
+    def filepath(self, file_type: str, **kwargs) -> str:
         dirtpl = self.directory(file_type)
         if dirtpl:
-            directory = dirtpl.format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
-            file_name = self.filename(file_type).format(name=file_name, key_type=key_type, suffix=_KEYS_SUFFIX[key_type] if key_type else None, **kwargs)
+            key_type = kwargs.get('key_type')
+            suffix = '.' + key_type.lower() if key_type else None
+            directory = dirtpl.format(suffix=suffix, **kwargs)
+            file_name = self.filename(file_type).format(suffix=suffix, **kwargs)
             assert '/' not in file_name, file_name
             return os.path.join(directory, file_name.replace('*', '_'))
         return ''
@@ -255,7 +253,7 @@ def configure_logger(level: Optional[str], fs: FileManager):
         if level not in levels:
             log.warning("unsupported log level: %s", level)
             level = "normal"
-        log.set_file(fs.filepath('log', 'certmgr'), levels[level])
+        log.set_file(fs.filepath('log'), levels[level])
 
 
 _DEFAULT_CT_LOGS = {

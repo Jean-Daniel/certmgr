@@ -278,7 +278,7 @@ class CertificateContext(object):
         return self._items.__iter__()
 
     def filepath(self, file_type: str, **kwargs):
-        return self.fs.filepath(file_type, self.name, **kwargs)
+        return self.fs.filepath(file_type, name=self.name, **kwargs)
 
     @property
     def name(self) -> str:
