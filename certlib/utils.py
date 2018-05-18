@@ -60,6 +60,7 @@ class WriteOperation(Operation):
         yield stream
         self._content = stream.getvalue()
 
+    @property
     def is_write(self) -> bool:
         return bool(self._content)
 

@@ -272,6 +272,7 @@ class UpdateAction(Action):
                 transactions.append(trx)
                 if trx.is_write:
                     hooks.add('params_installed', certificate_name=context.name, file=trx.file_path)
+                # TODO: hooks('removed')
 
         # save private keys
         for item in context:  # type: CertificateItem
@@ -286,7 +287,9 @@ class UpdateAction(Action):
                     trx = item.save_certificate(owner, root)
                     if trx:
                         transactions.append(trx)
-                        hooks.add('full_certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                        if trx.is_write:
+                            hooks.add('full_certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                        # TODO: hooks('removed')
                 else:
                     # archive existing file
                     path = item.filepath('full_certificate')
@@ -297,7 +300,9 @@ class UpdateAction(Action):
                 trx = item.save_key(owner, with_certificate=True)
                 if trx:
                     transactions.append(trx)
-                    hooks.add('full_key_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                    if trx.is_write:
+                        hooks.add('full_key_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                    # TODO: hooks('removed')
 
             if item.certificate_updated:
                 trx = item.save_chain(owner)
@@ -327,7 +332,9 @@ class UpdateAction(Action):
                 trx = item.save_ocsp(owner)
                 if trx:
                     transactions.append(trx)
-                    hooks.add('ocsp_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                    if trx.is_write:
+                        hooks.add('ocsp_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
+                    # TODO: hooks('removed')
 
             for ct_log in item.config.ct_submit_logs:
                 sct_data, updated = item.sct(ct_log)
