@@ -271,7 +271,7 @@ class UpdateAction(Action):
             if trx:
                 transactions.append(trx)
                 if trx.is_write:
-                    hooks.add('params_installed', certificate_name=context.name, params_file=trx.file_path)
+                    hooks.add('params_installed', certificate_name=context.name, file=trx.file_path)
 
         # save private keys
         for item in context:  # type: CertificateItem
