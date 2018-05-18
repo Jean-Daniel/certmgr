@@ -194,7 +194,7 @@ class CertificateItem(object):
 
     @ocsp_response.setter
     def ocsp_response(self, value: Optional[OCSP]):
-        self._ocsp_response_updated = self._ocsp_response is not value
+        self._ocsp_response_updated = self.ocsp_response is not value
         self._ocsp_response = value
 
     @property
@@ -291,13 +291,13 @@ class CertificateContext(object):
     @property
     def dhparams(self) -> Optional[bytes]:
         if self._dhparams is _UNINITIALIZED:
-            self._dhparams, self._ecparams = self._load_params()
+            self._load_params()
         return self._dhparams
 
     @property
     def ecparams(self) -> Optional[bytes]:
         if self._ecparams is _UNINITIALIZED:
-            self._dhparams, self._ecparams = self._load_params()
+            self._load_params()
         return self._ecparams
 
     @property
@@ -320,6 +320,9 @@ class CertificateContext(object):
         return op
 
     def update(self, dhparams: Optional[bytes], ecparams: Optional[bytes]):
+        if not dhparams and not ecparams:
+            # in case they are both None, we have to know if the params exists to properly set the update flag.
+            self._load_params()
         self._params_updated = dhparams != self._dhparams or ecparams != self._ecparams
         self._dhparams = dhparams
         self._ecparams = ecparams
@@ -348,7 +351,9 @@ class CertificateContext(object):
         self._key_cipher = KeyCipherData(passphrase.encode("utf-8"), force_prompt) if passphrase else KeyCipherData(None, False)
         return self._key_cipher if self._key_cipher.passphrase else None
 
-    def _load_params(self) -> Tuple[Optional[bytes], Optional[bytes]]:
+    def _load_params(self):
+        self._dhparams = self._ecparams = None
+
         pem_data = None
         param_file_path = self.filepath('param')
         if param_file_path:
@@ -368,10 +373,10 @@ class CertificateContext(object):
                 except FileNotFoundError:
                     pass
             else:
-                return None, None
+                return
 
         if not pem_data:
-            return None, None
+            return
 
         match = re.match(br'.*(-----BEGIN DH PARAMETERS-----.*-----END DH PARAMETERS-----)', pem_data, re.DOTALL)
         dhparam_pem = (match.group(1) + b'\n') if match else None
@@ -379,6 +384,8 @@ class CertificateContext(object):
         ecparam_pem = (match.group(1) + b'\n') if match else None
         if dhparam_pem and not check_dhparam(dhparam_pem):
             dhparam_pem = None
+        self._dhparams = dhparam_pem
+
         if ecparam_pem and not check_ecparam(ecparam_pem):
             ecparam_pem = None
-        return dhparam_pem, ecparam_pem
+        self._ecparams = ecparam_pem
