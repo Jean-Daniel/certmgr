@@ -6,7 +6,7 @@ import logging
 import os
 import pwd
 from collections import OrderedDict
-from typing import Iterable, Optional, Dict, Union, Tuple, List
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import collections
 

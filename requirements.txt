@@ -1,6 +1,6 @@
 acme==0.24.0
 josepy==1.1.0
-pyOpenSSL==17.5.0
+pyOpenSSL==18.0.0
 
 requests==2.18.4
 asn1crypto==0.24.0

@@ -16,7 +16,7 @@ from .context import CertificateContext
 from .context import CertificateItem
 from .crypto import PrivateKey
 from .logging import log
-from .utils import ArchiveOperation, commit_file_transactions, dirmode, Hooks
+from .utils import ArchiveOperation, Hooks, commit_file_transactions, dirmode
 from .verify import verify_certificate_installation
 
 

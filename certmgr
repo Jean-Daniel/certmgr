@@ -25,7 +25,7 @@ def verify_requirements():
                 if requirement.startswith('#'):
                     continue
                 if requirement:
-                    package, comparison, version = (re.split('\s?(<?>?==?)\s?', requirement) + ['', ''])[:3]
+                    package, comparison, version = (re.split(r'\s?(<?>?==?)\s?', requirement) + ['', ''])[:3]
                     try:
                         installed_version = pkg_resources.get_distribution(package).version
                         if '<=' == comparison:

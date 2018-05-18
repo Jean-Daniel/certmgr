@@ -1,16 +1,16 @@
 import datetime
 import re
 import struct
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 
 from certlib.utils import get_key_cipher
 from . import AcmeError
 from .config import CertificateSpec, FileManager
-from .crypto import PrivateKey, Certificate, check_dhparam, check_ecparam, load_full_chain_file, save_chain
+from .crypto import Certificate, PrivateKey, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log
 from .ocsp import OCSP
-from .sct import SCTLog, SCTData
-from .utils import ArchiveAndWriteOperation, WriteOperation, FileOwner, KeyCipherData
+from .sct import SCTData, SCTLog
+from .utils import ArchiveAndWriteOperation, FileOwner, KeyCipherData, WriteOperation
 
 _UNINITIALIZED = 'uninitialized'
 

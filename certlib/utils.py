@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from typing import AnyStr, Dict, List
-from typing import Optional, Iterable
+from typing import Iterable, Optional
 
 import collections
 

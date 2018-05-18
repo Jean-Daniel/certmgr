@@ -6,13 +6,13 @@ import subprocess
 import urllib
 from datetime import datetime
 from io import BytesIO
-from typing import Union, Optional, List, Tuple, Iterable, Callable, Type, TypeVar
+from typing import Callable, Iterable, List, Optional, Tuple, Type, TypeVar, Union
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat
 
 from . import AcmeError
 

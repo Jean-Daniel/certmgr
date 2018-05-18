@@ -4,19 +4,20 @@ import os
 import sys
 import time
 import urllib
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 from urllib import parse
 
 import collections
 import josepy
 import pkg_resources
-from acme import messages, client
+from acme import client, messages
 
 from . import AcmeError
 from .config import FileManager
 from .crypto import PrivateKey
 from .logging import log
-from .utils import ArchiveOperation, ArchiveAndWriteOperation, WriteOperation, commit_file_transactions, get_key_cipher, Hooks
+from .utils import (ArchiveAndWriteOperation, ArchiveOperation, Hooks,
+                    WriteOperation, commit_file_transactions, get_key_cipher)
 
 
 def _user_agent():

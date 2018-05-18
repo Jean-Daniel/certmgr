@@ -18,15 +18,15 @@ from asn1crypto import ocsp as asn1_ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from . import AcmeError, actions, acme
+from . import AcmeError, acme, actions
 from .acme import handle_authorizations
 from .actions import Action, update_links
-from .config import FileManager, Configuration
+from .config import Configuration, FileManager
 from .context import CertificateContext, CertificateItem
-from .crypto import PrivateKey, load_full_chain, get_dhparam_size, get_ecparam_curve, generate_dhparam, generate_ecparam, Certificate
+from .crypto import Certificate, PrivateKey, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
 from .logging import log
 from .ocsp import OCSP
-from .sct import fetch_sct, SCTLog
+from .sct import SCTLog, fetch_sct
 from .utils import ArchiveOperation, Hooks, commit_file_transactions
 from .verify import verify_certificate_installation
 

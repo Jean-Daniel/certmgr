@@ -1,10 +1,8 @@
-etc/*
-var/*
-acme*.json
+acme
+.pyenv
+certmgr.json
 
-*.pem
-*.zip
-*.orig
-*.sublime-*
+root_*.pem
 
 __pycache__
+.idea/workspace.xml
