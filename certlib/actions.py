@@ -1,4 +1,5 @@
 import abc
+import contextlib
 import os
 import shutil
 import stat
@@ -10,6 +11,7 @@ import josepy
 from acme import client
 from cryptography.hazmat.primitives import serialization
 
+from certlib.utils import FileOwner
 from .acme import handle_authorizations
 from .config import Configuration, FileManager
 from .context import CertificateContext
@@ -41,20 +43,16 @@ class Action(metaclass=abc.ABCMeta):
 def _process_symlink(root: str, name: str, target: str, link: str):
     link_path = os.path.join(root, name, link)
     if os.path.exists(target):
-        try:
+        with contextlib.suppress(FileNotFoundError):
             if os.readlink(link_path) == target:
                 return
             os.remove(link_path)
-        except FileNotFoundError:
-            pass
         log.debug("symlink '%s' -> '%s' created", link_path, target)
         os.symlink(target, link_path)
     else:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(link_path)
             log.debug("symlink '%s' removed", link_path)
-        except FileNotFoundError:
-            pass
 
 
 def update_links(context: CertificateContext):
@@ -122,30 +120,28 @@ class CheckAction(Action):
 
     def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
         super().__init__(config, fs, args, acme_client)
-        self._owner = config.fileowner()
         self._checked = dict()
 
-    def _check(self, file: str, mode: int):
-        try:
+    @staticmethod
+    def _check(file: str, mode: int, owner: FileOwner):
+        with contextlib.suppress(FileNotFoundError):
             s = os.stat(file, follow_symlinks=False)
             if stat.S_IMODE(s.st_mode) != mode:
                 log.info('file permission should be %s not %s', oct(mode), oct(stat.S_IMODE(s.st_mode)))
                 os.chmod(file, mode)
 
-            if s.st_uid != self._owner.uid or s.st_gid != self._owner.gid:
-                log.info('file owner/group should be %s/%s not %s/%s', self._owner.uid, self._owner.gid, s.st_uid, s.st_gid)
-                os.chown(file, self._owner.uid, self._owner.gid)
-        except FileNotFoundError:
-            pass
+            if s.st_uid != owner.uid or s.st_gid != owner.gid:
+                log.info('file "%s" owner/group should be %s/%s not %s/%s', file, owner.uid, owner.gid, s.st_uid, s.st_gid)
+                os.chown(file, owner.uid, owner.gid)
 
-    def _check_file(self, file: str, mode: int):
-        self._check(file, mode)
+    def _check_file(self, file: str, mode: int, owner: FileOwner):
+        self._check(file, mode, owner)
         # As dir path may contains variables, it can be different for each certificate item
         # so we have to test it for every files.
         dirpath = os.path.basename(file)
         existing = self._checked.get(dirpath)
         if existing is None:
-            self._check(dirpath, dirmode(mode))
+            self._check(dirpath, dirmode(mode), owner)
             self._checked[dirpath] = existing
         elif dirmode(mode) != existing:
             log.warning("directory '%s' has conflicting permissions: %s and %s", oct(existing), oct(dirmode(mode)))
@@ -153,34 +149,36 @@ class CheckAction(Action):
     def run(self, context: CertificateContext):
         log.info('Checking installed files')
 
+        owner = context.config.fileowner
         with log.prefix("  - "):
-            self._check_file(context.filepath('param'), 0o640)
+            self._check_file(context.filepath('param'), 0o640, owner)
         for item in context:
             with log.prefix("  - [{}] ".format(item.type.upper())):
                 # Private Keys
-                self._check_file(item.filepath('private_key'), 0o640)
-                self._check_file(item.filepath('full_key'), 0o640)
+                self._check_file(item.filepath('private_key'), 0o640, owner)
+                self._check_file(item.filepath('full_key'), 0o640, owner)
 
                 # Certificate
-                self._check_file(item.filepath('certificate'), 0o644)
-                self._check_file(item.filepath('chain'), 0o644)
-                self._check_file(item.filepath('full_certificate'), 0o644)
+                self._check_file(item.filepath('certificate'), 0o644, owner)
+                self._check_file(item.filepath('chain'), 0o644, owner)
+                self._check_file(item.filepath('full_certificate'), 0o644, owner)
 
                 # OCSP
-                self._check_file(item.filepath('ocsp'), 0o644)
+                self._check_file(item.filepath('ocsp'), 0o644, owner)
 
                 for ct_log in context.config.ct_submit_logs:
-                    self._check_file(item.filepath('sct', ct_log_name=ct_log.name), 0o644)
+                    self._check_file(item.filepath('sct', ct_log_name=ct_log.name), 0o644, owner)
 
         # check symlinks
         update_links(context)
 
     def finalize(self):
+        owner = FileOwner(os.getuid(), os.getgid(), True)
         resource = self.fs.directory('resource')
         # Check global file here
         with log.prefix("  - "):
-            self._check_file(os.path.join(resource, 'client_key.json'), 0o600)
-            self._check_file(os.path.join(resource, 'registration.json'), 0o600)
+            self._check_file(os.path.join(resource, 'client.key'), 0o600, owner)
+            self._check_file(os.path.join(resource, 'registration.json'), 0o600, owner)
 
 
 class RevokeAction(Action):

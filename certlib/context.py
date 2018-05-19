@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import re
 import struct
@@ -5,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from certlib.utils import get_key_cipher
 from . import AcmeError
-from .config import CertificateSpec, FileManager
+from .config import CertificateDef, FileManager
 from .crypto import Certificate, PrivateKey, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log
 from .ocsp import OCSP
@@ -254,7 +255,7 @@ class CertificateContext(object):
 
     # __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
 
-    def __init__(self, config: CertificateSpec, fs: FileManager):
+    def __init__(self, config: CertificateDef, fs: FileManager):
         self.config = config
         self.fs = fs
 
@@ -340,21 +341,16 @@ class CertificateContext(object):
         pem_data = None
         param_file_path = self.filepath('param')
         if param_file_path:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 with open(param_file_path, 'rb') as f:
                     pem_data = f.read()
-            except FileNotFoundError:
-                pass
 
         if not pem_data:
             for item in self:
                 certificate_file_path = item.filepath('certificate')
-                try:
-                    with open(certificate_file_path, 'rb') as f:
-                        pem_data = f.read()
-                    break
-                except FileNotFoundError:
-                    pass
+                with contextlib.suppress(FileNotFoundError), open(certificate_file_path, 'rb') as f:
+                    pem_data = f.read()
+                break
             else:
                 return
 

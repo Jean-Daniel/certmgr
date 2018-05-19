@@ -1,4 +1,5 @@
 import abc
+import contextlib
 import hashlib
 import logging
 import re
@@ -223,12 +224,9 @@ class Certificate(object):
 
     @staticmethod
     def load(cert_file: str) -> Optional['Certificate']:
-        try:
-            with open(cert_file, 'rb') as f:
-                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
-            return Certificate(cert)
-        except FileNotFoundError:
-            return None
+        with contextlib.suppress(FileNotFoundError), open(cert_file, 'rb') as f:
+            return Certificate(x509.load_pem_x509_certificate(f.read(), default_backend()))
+        return None
 
     def dump(self, stream: BytesIO, chain: 'CertificateChain' = None, dhparam_pem: bytes = None, ecparam_pem: bytes = None,
              root_certificate: 'Certificate' = None):
@@ -270,12 +268,9 @@ def load_chain(chain_pem: bytes) -> CertificateChain:
 
 
 def load_chain_file(chain_file: str) -> Optional[CertificateChain]:
-    try:
-        with open(chain_file, 'rb') as f:
-            chain_pem = f.read()
-        return load_chain(chain_pem)
-    except FileNotFoundError:
-        return None
+    with contextlib.suppress(FileNotFoundError), open(chain_file, 'rb') as f:
+        return load_chain(f.read())
+    return None
 
 
 def _load_full_chain(full_chain: List[Certificate]) -> Tuple[Optional[Certificate], Optional[CertificateChain]]:

@@ -92,7 +92,7 @@ class _Logger(logging.LoggerAdapter):
     def color(self, value: bool):
         if value:
             if not self._stream:
-                self.reset(True)
+                self.reset(True, logging.NOTSET)
             else:
                 self._stream.setFormatter(ColorFormatter())
         elif self.color:

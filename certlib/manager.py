@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -263,8 +264,8 @@ class UpdateAction(Action):
     def apply_changes(self, context: CertificateContext):
         # commit transaction, execute hooks, schedule service reload, …
         transactions = []
-        owner = self.config.fileowner()
         hooks = Hooks(self.config.hooks)
+        owner = context.config.fileowner()
 
         if context.params_updated:
             trx = context.save_params(owner)
@@ -346,7 +347,9 @@ class UpdateAction(Action):
                     hooks.add('sct_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path, ct_log_name=ct_log.name)
         if transactions:
             commit_file_transactions(transactions, self.fs.archive_dir(context.name))
-            self.update_services(context.config.services)
+            services = context.config.services
+            if services:
+                self._services.update(services)
             hooks.call()
 
     def finalize(self):
@@ -361,6 +364,10 @@ class UpdateAction(Action):
             log.info("Waiting service reload before verifying")
             time.sleep(5)  # allow time for services to reload before verification
 
+        # prune archives
+        self._prune_achives()
+
+        # Verify is needed
         if self.args.verify:
             max_ocsp_verify_attempts = self.config.int('max_ocsp_verify_attempts')
             ocsp_verify_retry_delay = self.config.int('ocsp_verify_retry_delay')
@@ -371,10 +378,6 @@ class UpdateAction(Action):
                         verify_certificate_installation(context, max_ocsp_verify_attempts, ocsp_verify_retry_delay)
                     except AcmeError as e:
                         log.error("validation error: %s", str(e))
-
-    def update_services(self, services: Iterable[str]):
-        if services:
-            self._services.update(services)
 
     def _reload_services(self) -> bool:
         reloaded = False
@@ -395,6 +398,33 @@ class UpdateAction(Action):
                 else:
                     log.error('no reload command registred')
         return reloaded
+
+    def _prune_achives(self):
+        archive_root = self.fs.directory('archive')
+        if not archive_root:
+            return None
+
+        days = self.config.int('archive_days')
+        if days <= 0:
+            return
+
+        try:
+            filenames = os.listdir(archive_root)
+        except FileNotFoundError:
+            return
+
+        prune_date = datetime.datetime.now() - datetime.timedelta(days=days)
+        for entry in filenames:
+            try:
+                date = datetime.datetime.strptime(entry, '%Y_%m_%d_%H%M%S')
+            except ValueError:
+                continue
+            if date < prune_date:
+                log.info("removing archive %s", entry)
+            try:
+                shutil.rmtree(os.path.join(archive_root, entry))
+            except Exception as e:
+                log.warning("error removing acrhive dir %s: %s", entry, str(e))
 
 
 class AcmeManager(object):
@@ -503,7 +533,7 @@ class AcmeManager(object):
         log.color = self.config.bool('color_output')
 
     def connect_client(self) -> client.ClientV2:
-        resource_dir = os.path.join(self.script_dir, self.fs.directory('resource'))
+        resource_dir = self.fs.directory('resource')
         archive_dir = self.fs.archive_dir('client')
         with log.prefix('[acme] '):
             return acme.connect_client(resource_dir, self.config.account['email'], self.config.get('acme_directory_url'),

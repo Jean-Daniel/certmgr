@@ -61,14 +61,14 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
     sock.settimeout(None)
 
 
-def fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[Certificate], OCSP]:
+def _fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) -> Tuple[List[Certificate], OCSP]:
     sock = socket.socket(addr[0], socket.SOCK_STREAM)
     sock.connect(addr[4])
 
     if starttls:
         _send_starttls(starttls, sock, host_name)
 
-    def _process_ocsp(conn: OpenSSL.SSL.Connection, ocsp_data, data):
+    def _process_ocsp(conn: OpenSSL.SSL.Connection, ocsp_data, _):
         conn.set_app_data(OCSP.decode(ocsp_data) if ocsp_data else None)
         return True
 
@@ -121,13 +121,13 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
         with log.prefix("   - [{}:{}] ".format(host_name, item.type.upper())):
             try:
                 log.debug('Connecting')
-                installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
+                installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, starttls)
                 if item.certificate.has_oscp_must_staple:
                     attempts = 1
                     while (not ocsp_staple) and (attempts < max_ocsp_verify_attempts):
                         time.sleep(ocsp_verify_retry_delay)
                         log.debug('Retry to fetch OCSP staple')
-                        installed_certificates, ocsp_staple = fetch_tls_info(addr, ssl_context, host_name, starttls)
+                        installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, starttls)
                         attempts += 1
 
                 installed_certificate = installed_certificates[0]

@@ -71,11 +71,9 @@ class WriteOperation(Operation):
 
     def apply(self, archive_dir: Optional[str]):
         tmp_path = self.tmp_path(archive_dir)
-        try:
+        with contextlib.suppress(FileExistsError):
             os.makedirs(os.path.dirname(tmp_path), dirmode(self.mode or 0o700))
             self._rmdir = True
-        except FileExistsError:
-            pass
 
         # Move existing file out of the way
         try:
@@ -88,8 +86,9 @@ class WriteOperation(Operation):
         if not self._content:
             return
 
-        mode = 'wb' if isinstance(self._content, bytes) else 'w'
-        with open(self.file_path, mode) as f:
+        os.makedirs(os.path.dirname(self.file_path), dirmode(self.mode), exist_ok=True)
+        fmode = 'wb' if isinstance(self._content, bytes) else 'w'
+        with open(self.file_path, fmode) as f:
             if self.mode:
                 try:
                     os.fchmod(f.fileno(), self.mode)
@@ -105,11 +104,9 @@ class WriteOperation(Operation):
         self._content = None
 
     def revert(self):
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(self.file_path)
             log.debug('%s removed', self.file_path)
-        except FileNotFoundError:
-            pass
 
         if self._tmp_path:
             os.rename(self._tmp_path, self.file_path)
@@ -118,16 +115,12 @@ class WriteOperation(Operation):
 
     def cleanup(self):
         if self._tmp_path:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 os.remove(self._tmp_path)
-            except FileNotFoundError:
-                pass
 
             if self._rmdir:
-                try:
+                with contextlib.suppress(FileNotFoundError, OSError):
                     os.removedirs(os.path.dirname(self._tmp_path))
-                except (FileNotFoundError, OSError):
-                    pass
 
             self._tmp_path = None
 

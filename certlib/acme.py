@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import json
 import os
@@ -39,17 +40,14 @@ class _PasswordProvider(object):
 def connect_client(resource_dir: str, account: str, directory_url: str, passphrase, archive_dir: Optional[str]) -> client.ClientV2:
     registration = None
     registration_path = os.path.join(resource_dir, 'registration.json')
-    try:
-        with open(registration_path) as f:
-            registration = messages.RegistrationResource.json_loads(f.read())
-            log.debug('Loaded registration %s', registration_path)
-            acme_url = urllib.parse.urlparse(directory_url)
-            reg_url = urllib.parse.urlparse(registration.uri)
-            if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
-                log.info('ACME service URL has changed, re-registering with new client key')
-                registration = None
-    except FileNotFoundError:
-        pass
+    with contextlib.suppress(FileNotFoundError), open(registration_path) as f:
+        registration = messages.RegistrationResource.json_loads(f.read())
+        log.debug('Loaded registration %s', registration_path)
+        acme_url = urllib.parse.urlparse(directory_url)
+        reg_url = urllib.parse.urlparse(registration.uri)
+        if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
+            log.info('ACME service URL has changed, re-registering with new client key')
+            registration = None
 
     ops = []
 
@@ -177,6 +175,7 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
         challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
         log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
         try:
+            os.makedirs(os.path.dirname(challenge_file_path), 0o755, exist_ok=True)
             with open(challenge_file_path, 'w') as f:
                 f.write(challenge.validation(acme_client.net.key))
                 os.fchmod(f.fileno(), 0o644)

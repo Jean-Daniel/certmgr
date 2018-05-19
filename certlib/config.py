@@ -72,7 +72,11 @@ class VerifyTarget(object):
         else:
             assert isinstance(spec, dict), "dict expected but got " + str(spec.__class__)
             if 'port' not in spec:
-                log.error('verify missing port definition')
+                raise AcmeError('[config:verify] missing port definition')
+
+            for key in spec.keys():
+                if key not in ('port', 'hosts', 'starttls', 'key_types'):
+                    log.warning("[verify] unknown key '%s'", key)
             self.port = spec.get('port')
             self.hosts = get_list(spec, 'hosts')
             self.starttls = spec.get('starttls')
@@ -85,8 +89,10 @@ class VerifyTarget(object):
                 raise AcmeError('[config] Invalid port definition "{}"', self.port)
 
 
-class PrivateKeySpec(object):
+class PrivateKeyDef(object):
     __slots__ = ('types', 'size', 'curve', 'passphrase')
+
+    SUPPORTED_KEYS = ('key_size', 'key_curve', 'key_passphrase')
 
     def __init__(self, spec, defaults):
         self.size = get_int(spec, 'key_size', defaults['key_size'])
@@ -107,14 +113,22 @@ class PrivateKeySpec(object):
         raise AcmeError('Unsupported key type {}', key_type)
 
 
-class CertificateSpec(object):
+class CertificateDef(object):
+    SUPPORTED_KEYS = set(('common_name', 'alt_names', 'key_types', 'services',
+                          'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
+                          'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user', 'file_group') + PrivateKeyDef.SUPPORTED_KEYS)
+
     __slots__ = ('name', 'private_key', 'common_name', 'alt_names',
-                 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
+                 'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
-    def __init__(self, name, spec, defaults, ct_logs):
+    def __init__(self, name, spec: dict, defaults, ct_logs):
+        for key in spec.keys():
+            if key not in self.SUPPORTED_KEYS:
+                log.warning("[%s] unsupported key %s", name, key)
+
         self.name = name
-        self.private_key = PrivateKeySpec(spec, defaults)
+        self.private_key = PrivateKeyDef(spec, defaults)
         self.common_name = spec.get('common_name', name).strip().lower()
         alt_names = spec.get('alt_names')
         if not alt_names:
@@ -158,6 +172,20 @@ class CertificateSpec(object):
 
         self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
 
+        # Compute file owner
+        try:
+            selfuid = os.getuid()
+            user = spec.get('file_user', defaults['file_user'])
+            uid = pwd.getpwnam(user).pw_uid if user else selfuid
+
+            selfgid = os.getgid()
+            group = spec.get('file_group', defaults['file_group'])
+            gid = grp.getgrnam(group).gr_gid if group else selfgid
+
+            self.fileowner = FileOwner(uid, gid, uid == selfuid and gid == selfgid)
+        except Exception as e:
+            raise AcmeError("Failed to determine user and group ID") from e
+
 
 class FileManager(object):
     DEFAULT_DIRECTORIES = {
@@ -198,16 +226,11 @@ class FileManager(object):
                 dirpath = os.path.join(base, dirpath)
             directories[key] = os.path.realpath(dirpath)
 
-        safedirs = {'pid', 'log', 'link'}
-        for dirname, dirpath in directories.items():
-            if not dirpath or dirname in safedirs:
-                continue
-
         self._directories = directories
         self._filenames = filenames
         self._challenges = http_challenges
 
-    def filename(self, file_type: str) -> Optional[str]:
+    def _filename(self, file_type: str) -> Optional[str]:
         return self._filenames.get(file_type)
 
     def filepath(self, file_type: str, **kwargs) -> str:
@@ -216,7 +239,7 @@ class FileManager(object):
             key_type = kwargs.get('key_type')
             suffix = '.' + key_type.lower() if key_type else None
             directory = dirtpl.format(suffix=suffix, **kwargs)
-            file_name = self.filename(file_type).format(suffix=suffix, **kwargs)
+            file_name = self._filename(file_type).format(suffix=suffix, **kwargs)
             assert '/' not in file_name, file_name
             return os.path.join(directory, file_name.replace('*', '_'))
         return ''
@@ -244,16 +267,21 @@ class FileManager(object):
 
 def configure_logger(level: Optional[str], fs: FileManager):
     # if level is None, don't create log file
-    if level is not None:
-        levels = {
-            "normal": logging.WARNING,
-            "verbose": logging.INFO,
-            "debug": logging.DEBUG,
-        }
-        if level not in levels:
-            log.warning("unsupported log level: %s", level)
-            level = "normal"
-        log.set_file(fs.filepath('log'), levels[level])
+    if level is None:
+        return
+    log_file = fs.filepath('log')
+    if not log_file:
+        return
+
+    levels = {
+        "normal": logging.WARNING,
+        "verbose": logging.INFO,
+        "debug": logging.DEBUG,
+    }
+    if level not in levels:
+        log.warning("unsupported log level: %s", level)
+        level = "normal"
+    log.set_file(fs.filepath('log'), levels[level])
 
 
 _DEFAULT_HOOKS = {
@@ -400,12 +428,12 @@ class Configuration(object):
         self.hooks = dict(_DEFAULT_HOOKS)  # type: Dict[str, Optional[List[Hook]]]
         self.account = {'email': None, 'passphrase': None}
         self.settings = {
-            'log_level': 'debug',
+            'log_level': 'info',
             'color_output': True,
-            'file_user': None,
-            'file_group': None,
 
+            'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
             'renewal_days': 30,
+            'archive_days': 30,
             'max_authorization_attempts': 30,
             'authorization_delay': 10,
             'cert_poll_time': 30,
@@ -413,9 +441,10 @@ class Configuration(object):
             'ocsp_verify_retry_delay': 5,
             'min_run_delay': 300,
             'max_run_delay': 3600,
-            'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
 
             # certificates default values
+            'file_user': None,
+            'file_group': None,
             'key_size': 4096,
             'key_curve': 'secp384r1',
             'key_passphrase': None,
@@ -442,7 +471,7 @@ class Configuration(object):
             'znc': 'systemctl restart znc'
         }
 
-        self.certificates = OrderedDict()  # type: Dict[str, CertificateSpec]
+        self.certificates = OrderedDict()  # type: Dict[str, CertificateDef]
 
     def get(self, item: str, default=None):
         return self.settings.get(item, default)
@@ -456,27 +485,13 @@ class Configuration(object):
     def list(self, key: str, default=()):
         return get_list(self.settings, key, default)
 
-    def fileowner(self) -> FileOwner:
-        try:
-            selfuid = os.getuid()
-            user = self.get('file_user')
-            uid = pwd.getpwnam(user).pw_uid if user else selfuid
-
-            selfgid = os.getgid()
-            group = self.get('file_group')
-            gid = grp.getgrnam(group).gr_gid if group else selfgid
-
-            return FileOwner(uid, gid, uid == selfuid and gid == selfgid)
-        except Exception as e:
-            raise AcmeError("Failed to determine user and group ID") from e
-
     def service(self, service_name: str) -> Optional[str]:
         return self.services[service_name]
 
     def _parse_certificates(self, certificates: dict, sct_logs: dict):
         host_names = set()
         for certificate_name, certificate_spec in certificates.items():
-            cert = CertificateSpec(certificate_name, certificate_spec, self.settings, sct_logs)
+            cert = CertificateDef(certificate_name, certificate_spec, self.settings, sct_logs)
             for host_name in cert.alt_names:
                 if host_name in host_names:
                     log.info("{} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
@@ -491,6 +506,8 @@ class Configuration(object):
 
     def _parse_hooks(self, values: dict):
         for name, spec in values.items():
+            if not spec:
+                continue
             if isinstance(spec, list):
                 hooks = [Hook(name, item) for item in spec]
             else:
