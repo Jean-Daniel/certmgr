@@ -265,7 +265,7 @@ class UpdateAction(Action):
         # commit transaction, execute hooks, schedule service reload, …
         transactions = []
         hooks = Hooks(self.config.hooks)
-        owner = context.config.fileowner()
+        owner = context.config.fileowner
 
         if context.params_updated:
             trx = context.save_params(owner)
