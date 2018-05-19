@@ -53,6 +53,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
 
     client_key = None
     client_key_cipher = None
+    client_key_upgrade = False
     client_key_path = os.path.join(resource_dir, 'client.key')
     # ACME-ISSUE: Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
     if registration:
@@ -66,6 +67,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
                 with open(client_old_key_path) as f:
                     # pylint: disable=protected-access
                     client_key = PrivateKey.from_key(josepy.JWKRSA.fields_from_json(json.load(f)).key._wrapped, False)
+                    client_key_upgrade = True
                 log.debug('Loaded old format client key %s', client_old_key_path)
                 ops.append(ArchiveOperation('resource', client_old_key_path))
             except FileNotFoundError:
@@ -75,8 +77,9 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
             log.debug('Loaded client key %s', client_key_path)
 
     op = None
-    if not client_key:
-        client_key = PrivateKey.create('rsa', 4096)
+    if client_key_upgrade or not client_key:
+        if not client_key:
+            client_key = PrivateKey.create('rsa', 4096)
         if passphrase and not client_key_cipher:
             client_key_cipher = get_key_cipher('acme_client', passphrase, False)
         op = ArchiveAndWriteOperation('resource', client_key_path, mode=0o600)
