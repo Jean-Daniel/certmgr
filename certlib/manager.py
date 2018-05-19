@@ -7,18 +7,18 @@ import json
 import logging
 import os
 import random
-import shutil
 import subprocess
 import sys
 import time
 from argparse import Namespace
-from typing import Iterable, Optional
+from typing import Optional
 
 from acme import client, messages
 from asn1crypto import ocsp as asn1_ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
+from certlib.utils import prune_achives
 from . import AcmeError, acme, actions
 from .acme import handle_authorizations
 from .actions import Action, update_links
@@ -67,10 +67,13 @@ class UpdateAction(Action):
 
         self.apply_changes(context)
         self._done.append(context)
+        # Fixup links
         try:
             update_links(context)
         except AcmeError as e:
             log.error("symlinks update error: %s", str(e))
+        # Cleanup Archives
+        prune_achives(os.path.join(self.fs.directory('archive'), context.name), self.config.int('archive_days'))
 
     def process_certificates(self, context: CertificateContext):
         log.info('Update Certificates')
@@ -105,6 +108,7 @@ class UpdateAction(Action):
                         raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
 
                     log.info('New certificate issued')
+
 
     def process_params(self, context: CertificateContext):
         log.info('Update DH and EC params')
@@ -365,7 +369,7 @@ class UpdateAction(Action):
             time.sleep(5)  # allow time for services to reload before verification
 
         # prune archives
-        self._prune_achives()
+        prune_achives(os.path.join(self.fs.directory('archive'), 'client'), self.config.int('archive_days'))
 
         # Verify is needed
         if self.args.verify:
@@ -398,33 +402,6 @@ class UpdateAction(Action):
                 else:
                     log.error('no reload command registred')
         return reloaded
-
-    def _prune_achives(self):
-        archive_root = self.fs.directory('archive')
-        if not archive_root:
-            return None
-
-        days = self.config.int('archive_days')
-        if days <= 0:
-            return
-
-        try:
-            filenames = os.listdir(archive_root)
-        except FileNotFoundError:
-            return
-
-        prune_date = datetime.datetime.now() - datetime.timedelta(days=days)
-        for entry in filenames:
-            try:
-                date = datetime.datetime.strptime(entry, '%Y_%m_%d_%H%M%S')
-            except ValueError:
-                continue
-            if date < prune_date:
-                log.info("removing archive %s", entry)
-            try:
-                shutil.rmtree(os.path.join(archive_root, entry))
-            except Exception as e:
-                log.warning("error removing acrhive dir %s: %s", entry, str(e))
 
 
 class AcmeManager(object):
@@ -477,10 +454,6 @@ class AcmeManager(object):
         action.add_argument('certificate_names', nargs='*')
         action.set_defaults(cls=actions.AuthAction)
 
-        action = subparsers.add_parser('verify', help='verify installed certificates')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.VerifyAction)
-
         action = subparsers.add_parser('update', help='update keys, certificates, oscp, sct and params')
         action.add_argument('certificate_names', nargs='*')
         action.set_defaults(cls=UpdateAction)
@@ -507,6 +480,14 @@ class AcmeManager(object):
         action.add_argument('--no-auth',
                             action='store_true', dest='no_auth', default=False,
                             help='Assume all domain names are already verified and do not perform any authorization')
+
+        action = subparsers.add_parser('cleanup', help='remove old archives')
+        action.add_argument('certificate_names', nargs='*')
+        action.set_defaults(cls=actions.PruneAction)
+
+        action.add_argument('--days', required=False,
+                            type=int, dest='days', default=-1,
+                            help='use to override archive_days config')
 
         # argparser.set_default_subparser('update')
         # action.add_argument('--fast-dhparams',

@@ -11,14 +11,13 @@ import josepy
 from acme import client
 from cryptography.hazmat.primitives import serialization
 
-from certlib.utils import FileOwner
 from .acme import handle_authorizations
 from .config import Configuration, FileManager
 from .context import CertificateContext
 from .context import CertificateItem
 from .crypto import PrivateKey
 from .logging import log
-from .utils import ArchiveOperation, Hooks, commit_file_transactions, dirmode
+from .utils import ArchiveOperation, FileOwner, Hooks, commit_file_transactions, dirmode, prune_achives
 from .verify import verify_certificate_installation
 
 
@@ -179,6 +178,22 @@ class CheckAction(Action):
         with log.prefix("  - "):
             self._check_file(os.path.join(resource, 'client.key'), 0o600, owner)
             self._check_file(os.path.join(resource, 'registration.json'), 0o600, owner)
+
+
+class PruneAction(Action):
+    has_acme_client = False
+
+    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
+        super().__init__(config, fs, args, acme_client)
+        self.days = self.args.days
+        if self.days < 0:
+            self.days = self.config.int('archive_days')
+
+    def run(self, context: CertificateContext):
+        prune_achives(os.path.join(self.fs.directory('archive'), context.name), self.days)
+
+    def finalize(self):
+        prune_achives(os.path.join(self.fs.directory('archive'), 'client'), self.days)
 
 
 class RevokeAction(Action):
