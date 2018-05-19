@@ -277,25 +277,25 @@ class UpdateAction(Action):
 
         # save private keys
         for item in context:  # type: CertificateItem
+            root = self.root_certificate(item.type)
+            if not root:
+                # archive existing file
+                path = item.filepath('full_certificate')
+                if path:
+                    transactions.append(ArchiveOperation('certificates', path))
+                    # TODO: hooks('removed')
+
             if item.certificate_updated or context.params_updated:
                 trx = item.save_certificate(owner)
                 if trx:
                     transactions.append(trx)
                     hooks.add('certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
 
-                root = self.root_certificate(item.type)
                 if root:
                     trx = item.save_certificate(owner, root)
                     if trx:
                         transactions.append(trx)
-                        if trx.is_write:
-                            hooks.add('full_certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
-                        # TODO: hooks('removed')
-                else:
-                    # archive existing file
-                    path = item.filepath('full_certificate')
-                    if path:
-                        transactions.append(ArchiveOperation('certificates', path))
+                        hooks.add('full_certificate_installed', certificate_name=item.name, key_type=item.type, file=trx.file_path)
 
                 # Full Key
                 trx = item.save_key(owner, with_certificate=True)
