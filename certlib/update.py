@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from typing import Optional
 
 from acme import client, messages
@@ -74,7 +75,7 @@ class UpdateAction(Action):
         for item in context:  # type: CertificateItem
             with log.prefix('  - [{}] '.format(item.type.upper())):
                 if self.args.force or item.should_renew(self.config.int('renewal_days')):
-                    log.debug('Generating key')
+                    log.progress('Generating key')
                     key = PrivateKey.create(item.type, item.params)
 
                     log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.alt_names))
@@ -99,7 +100,7 @@ class UpdateAction(Action):
                     except Exception as e:
                         raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
 
-                    log.info('New certificate issued')
+                    log.progress('New certificate issued')
 
     def process_params(self, context: CertificateContext):
         log.info('Update DH and EC params')
@@ -133,10 +134,10 @@ class UpdateAction(Action):
             if dhparam_size or ecparam_curve:
                 # generate params if needed
                 if dhparam_size and not dhparams:
-                    log.info('Generating %s bit Diffie-Hellman parameters', dhparam_size)
+                    log.progress('Generating %s bit Diffie-Hellman parameters', dhparam_size)
                     dhparams = generate_dhparam(dhparam_size)
                 if ecparam_curve and not ecparams:
-                    log.info('Generating %s elliptical curve parameters', ecparam_curve)
+                    log.progress('Generating %s elliptical curve parameters', ecparam_curve)
                     ecparams = generate_ecparam(ecparam_curve)
                 context.update(dhparams, ecparams)
             elif context.dhparams or context.ecparams:
@@ -218,7 +219,7 @@ class UpdateAction(Action):
                             log.debug('OCSP response from %s has not been updated', ocsp_url)
                             break
 
-                        log.info('Updating OCSP response from %s', ocsp_url)
+                        log.progress('Updating OCSP response from %s', ocsp_url)
                         item.ocsp_response = ocsp_response
                         break
 
@@ -245,7 +246,7 @@ class UpdateAction(Action):
                     if sct_data:
                         existing_sct_data, _ = item.sct(ct_log)
                         if sct_data and sct_data != existing_sct_data:
-                            log.info('[%s] Saving SCT (%s)', ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())
+                            log.progress('[%s] Saving SCT (%s)', ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())
                             item.update_sct(ct_log, sct_data)
                         elif sct_data:
                             log.debug('[%s] SCT up to date (%s)', ct_log.name, _sct_datetime(sct_data.timestamp).isoformat())

@@ -54,6 +54,9 @@ class ColorFormatter(_Formatter):
             style = 'bold'
         elif record.levelno >= logging.WARNING:
             color = 'yellow'
+            style = 'bold'
+        elif record.levelno >= PROGRESS:
+            color = 'dark gray'
         elif record.levelno >= logging.INFO:
             color = 'dark gray'
         else:

@@ -345,7 +345,7 @@ class Configuration(object):
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
-            'verify': [ 443 ],
+            'verify': [443],
 
             'lock_file': '/var/run/lock/certmgr.lock',
         }

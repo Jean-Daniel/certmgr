@@ -165,7 +165,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
     if not operations:
         return
 
-    log.debug('Committing file transaction')
+    log.info('Committing file transaction')
     applied = []
     try:
         with log.prefix("  "):
@@ -213,7 +213,7 @@ class Hook(object):
         args = None
         try:
             args = [arg.format(**kwargs) for arg in self.args]
-            log.info('Calling hook %s: %s', self.name, args)
+            log.progress('Calling hook %s: %s', self.name, args)
             # TODO: add support for env, …
             output = subprocess.check_output(args, cwd=self.cwd, stderr=subprocess.STDOUT, shell=False)
             if output:

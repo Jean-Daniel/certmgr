@@ -80,7 +80,7 @@ def _fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) 
     ssl_sock.do_handshake()
     ocsp = ssl_sock.get_app_data()
     log.debug('Connected to %s, protocol %s, cipher %s, OCSP Staple %s', ssl_sock.get_servername().decode(), ssl_sock.get_protocol_version_name(),
-              ssl_sock.get_cipher_name(), ocsp.response_status.upper() if ocsp else 'missing')
+              ssl_sock.get_cipher_name(), ocsp.cert_status.upper() if ocsp else '<missing>')
     installed_certificates = ssl_sock.get_peer_cert_chain()  # type: List[OpenSSL.crypto.X509]
 
     ssl_sock.shutdown()
@@ -117,7 +117,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
 
     for addr in addr_info:
         host = "{} ({}:{}): ".format(host_name, ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0], port_number)
-        log.info(" • Verifying host %s", host)
+        log.progress(" • Verifying host %s", host)
         with log.prefix("   - [{}:{}] ".format(host_name, item.type.upper())):
             try:
                 log.debug('Connecting')
@@ -133,7 +133,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                 installed_certificate = installed_certificates[0]
                 installed_chain = _validate_chain(installed_certificates[1:])
                 if item.certificate == installed_certificate:
-                    log.info('certificate present', extra={'color': 'green'})
+                    log.progress('certificate present', extra={'color': 'green'})
                 else:
                     log.error('certificate %s mismatch', installed_certificate.common_name)
                 if len(item.chain) != len(installed_chain):
@@ -141,14 +141,14 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                 else:
                     for intermediate, installed_intermediate in zip(item.chain, installed_chain):
                         if intermediate == installed_intermediate:
-                            log.info('Intermediate certificate "%s" present', intermediate.common_name, extra={'color': 'green'})
+                            log.progress('Intermediate certificate "%s" present', intermediate.common_name, extra={'color': 'green'})
                         else:
                             log.error('Intermediate certificate "%s" mismatch', installed_intermediate.common_name)
                 if ocsp_staple:
                     log.debug('Verify OCSP response status')
-                    ocsp_status = ocsp_staple.response_status
+                    ocsp_status = ocsp_staple.cert_status
                     if 'good' == ocsp_status.lower():
-                        log.info('OCSP staple status is GOOD', extra={'color': 'green'})
+                        log.progress('OCSP staple status is GOOD', extra={'color': 'green'})
                     else:
                         log.error('OCSP staple has status: %s', ocsp_status.upper())
                 else:
