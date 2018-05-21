@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import hashlib
+import json
 import os
 import subprocess
 from typing import Optional
@@ -204,7 +205,7 @@ class UpdateAction(Action):
                             log.warning('OCSP request received "%s" from %s', ocsp_response.response_status, ocsp_url)
                             continue
 
-                        ocsp_status = ocsp_response.response_status
+                        ocsp_status = ocsp_response.cert_status
                         this_update = ocsp_response.this_update
                         log.debug('Retrieved OCSP status "%s" from %s updated at %s', ocsp_status.upper(),
                                   ocsp_url, this_update.strftime('%Y-%m-%d %H:%M:%S UTC'))

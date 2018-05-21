@@ -221,9 +221,9 @@ class Hook(object):
                     output = output.decode('utf-8')
                 except UnicodeEncodeError:
                     pass
-                log.info("-> %s", output)
+                log.info("> %s", output)
             else:
-                log.info(" - OK")
+                log.info("  OK")
         except KeyError as e:
             log.warning('Invalid hook specification for "%s": unknown key {%s}', self.name, e)
         except subprocess.CalledProcessError as e:

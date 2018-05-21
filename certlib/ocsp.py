@@ -19,6 +19,10 @@ class OCSP(object):
         return OCSP(ocsp.OCSPResponse.load(ocsp_data))
 
     @property
+    def response_status(self) -> str:
+        return self.asn1['response_status'].native
+
+    @property
     def serial_number(self) -> Optional[int]:
         try:
             cert_id = self.asn1.response_data['responses'][0]['cert_id']
@@ -49,7 +53,7 @@ class OCSP(object):
         return None
 
     @property
-    def response_status(self):
+    def cert_status(self):
         return self.asn1.response_data['responses'][0]['cert_status'].name
 
     @staticmethod
