@@ -347,7 +347,7 @@ class Configuration(object):
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
             'verify': None,
 
-            'lock_file': '/var/run/certmgr.lock',
+            'lock_file': '/var/run/lock/certmgr.lock',
         }
 
         self.services = {
