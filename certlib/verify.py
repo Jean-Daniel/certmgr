@@ -163,8 +163,8 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
     ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
     ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
     all_ciphers = ssl_sock.get_cipher_list()
-    for item in context:
-        key_type_ciphers[item.type] = ':'.join([cipher_name for cipher_name in all_ciphers if item.type.upper() in cipher_name]).encode('ascii')
+    for key_type in context.config.key_types:
+        key_type_ciphers[key_type] = ':'.join([cipher_name for cipher_name in all_ciphers if key_type.upper() in cipher_name]).encode('ascii')
 
     verify_list = context.config.verify
     if not verify_list:
