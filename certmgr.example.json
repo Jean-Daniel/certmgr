@@ -1,175 +1,133 @@
 {
-    "account": {
-        "email": "<youremail@yourdomain>"
+  "account": {
+    "email": "<youremail@yourdomain>"
+  },
+  "settings": {
+    "data_dir": "/etc/acme",
+    "http_challenge_dir": "/var/www/{fqdn}/.well-known/acme-challenge",
+    "log_level": "debug",
+    "log_file": "/var/log/certmgr/certmgr.log",
+    "lock_file": "/var/run/certmgr.lock",
+    "color_output": true,
+    "key_size": 4096,
+    "key_curve": "secp384r1",
+    "key_passphrase": null,
+    "dhparam_size": 2048,
+    "ecparam_curve": "secp384r1",
+    "file_user": "root",
+    "file_group": "ssl-cert",
+    "ocsp_must_staple": false,
+    "ocsp_responder_urls": [ "http://ocsp.int-x3.letsencrypt.org" ],
+    "ct_submit_logs": [ "google_icarus", "google_pilot" ],
+    "renewal_days": 30,
+    "max_authorization_attempts": 30,
+    "authorization_delay": 10,
+    "cert_poll_time": 30,
+    "max_ocsp_verify_attempts": 10,
+    "ocsp_verify_retry_delay": 5,
+    "min_run_delay": 300,
+    "max_run_delay": 3600,
+    "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory"
+  },
+  "services": {
+    "apache": "systemctl reload apache2",
+    "coturn": "systemctl restart coturn",
+    "dovecot": "systemctl restart dovecot",
+    "etherpad": "systemctl restart etherpad",
+    "mysql": "systemctl reload mysql",
+    "nginx": "systemctl reload nginx",
+    "postfix": "systemctl reload postfix",
+    "postgresql": "systemctl reload postgresql",
+    "prosody": "systemctl restart prosody",
+    "slapd": "systemctl restart slapd",
+    "synapse": "systemctl restart matrix-synapse",
+    "znc": "systemctl restart znc"
+  },
+  "hooks": {
+    "set_http_challenge": null,
+    "clear_http_challenge": null,
+    "private_key_installed": null,
+    "certificate_installed": null,
+    "full_certificate_installed": null,
+    "chain_installed": null,
+    "full_key_installed": null,
+    "params_installed": null,
+    "sct_installed": null,
+    "ocsp_installed": null
+  },
+  "ct_logs": {
+    "google_pilot": {
+      "url": "https://ct.googleapis.com/pilot",
+      "id": "pLkJkLQYWBSHuxOizGdwCjw1mAT5G9+443fNDsgN3BA="
     },
-    "settings": {
-        "log_level": "debug",
-        "color_output": true,
-        "key_size": 4096,
-        "key_curve": "secp384r1",
-        "key_passphrase": null,
-        "dhparam_size": 2048,
-        "ecparam_curve": "secp384r1",
-        "file_user": "root",
-        "file_group": "ssl-cert",
-        "ocsp_must_staple": false,
-        "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
-        "ct_submit_logs": ["google_icarus", "google_pilot"],
-        "renewal_days": 30,
-        "max_authorization_attempts": 30,
-        "authorization_delay": 10,
-        "cert_poll_time": 30,
-        "max_ocsp_verify_attempts": 10,
-        "ocsp_verify_retry_delay": 5,
-        "min_run_delay": 300,
-        "max_run_delay": 3600,
-        "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory"
+    "google_icarus": {
+      "url": "https://ct.googleapis.com/icarus",
+      "id": "KTxRllTIOWW6qlD8WAfUt2+/WHopctykwwz05UVH9Hg="
     },
-    "directories": {
-        "log": "/var/log/certmgr",
-        "lock": "/var/run",
-        "resource": "/var/local/certmgr",
-        "private_key": "/etc/ssl/private",
-        "full_key": "/etc/ssl/private",
-        "certificate": "/etc/ssl/certs",
-        "full_certificate": "/etc/ssl/certs",
-        "chain": "/etc/ssl/certs",
-        "param": "/etc/ssl/params",
-        "http_challenge": null,
-        "ocsp": "/etc/ssl/ocsp/",
-        "sct": "/etc/ssl/scts/{name}/{key_type}",
-        "archive": "/etc/ssl/archive",
-        "temp": null
+    "google_rocketeer": {
+      "url": "https://ct.googleapis.com/rocketeer",
+      "id": "7ku9t3XOYLrhQmkfq+GeZqMPfl+wctiDAMR7iXqo/cs="
     },
-    "file_names": {
-        "log": "certmgr.log",
-        "lock": "certmgr.lock",
-        "private_key": "{name}{suffix}.key",
-        "full_key": "{name}_full{suffix}.key",
-        "certificate": "{name}{suffix}.pem",
-        "full_certificate": "{name}+root{suffix}.pem",
-        "chain": "{name}_chain{suffix}.pem",
-        "param": "{name}_param.pem",
-        "ocsp": "{name}{suffix}.ocsp",
-        "sct": "{ct_log_name}.sct"
+    "google_skydiver": {
+      "url": "https://ct.googleapis.com/skydiver",
+      "id": "u9nfvB+KcbWTlCOXqpJ7RzhXlQqrUugakJZkNo4e0YU="
     },
-    "services": {
-        "apache": "systemctl reload apache2",
-        "coturn": "systemctl restart coturn",
-        "dovecot": "systemctl restart dovecot",
-        "etherpad": "systemctl restart etherpad",
-        "mysql": "systemctl reload mysql",
-        "nginx": "systemctl reload nginx",
-        "postfix": "systemctl reload postfix",
-        "postgresql": "systemctl reload postgresql",
-        "prosody": "systemctl restart prosody",
-        "slapd": "systemctl restart slapd",
-        "synapse": "systemctl restart matrix-synapse",
-        "znc": "systemctl restart znc"
+    "google_testtube": {
+      "url": "http://ct.googleapis.com/testtube",
+      "id": "sMyD5aX5fWuvfAnMKEkEhyrH6IsTLGNQt8b9JuFsbHc="
     },
-    "hooks": {
-        "set_http_challenge": null,
-        "clear_http_challenge": null,
-        "private_key_installed": null,
-        "certificate_installed": null,
-        "full_certificate_installed": null,
-        "chain_installed": null,
-        "full_key_installed": null,
-        "params_installed": null,
-        "sct_installed": null,
-        "ocsp_installed": null
+    "google_argon2018": {
+      "url": "https://ct.googleapis.com/logs/argon2018",
+      "id": "pFASaQVaFVReYhGrN7wQP2KuVXakXksXFEU+GyIQaiU="
     },
-    "ct_logs": {
-        "google_pilot": {
-            "url": "https://ct.googleapis.com/pilot",
-            "id": "pLkJkLQYWBSHuxOizGdwCjw1mAT5G9+443fNDsgN3BA="
-        },
-        "google_icarus": {
-            "url": "https://ct.googleapis.com/icarus",
-            "id": "KTxRllTIOWW6qlD8WAfUt2+/WHopctykwwz05UVH9Hg="
-        },
-        "google_rocketeer": {
-            "url": "https://ct.googleapis.com/rocketeer",
-            "id": "7ku9t3XOYLrhQmkfq+GeZqMPfl+wctiDAMR7iXqo/cs="
-        },
-        "google_skydiver": {
-            "url": "https://ct.googleapis.com/skydiver",
-            "id": "u9nfvB+KcbWTlCOXqpJ7RzhXlQqrUugakJZkNo4e0YU="
-        },
-        "google_testtube": {
-            "url": "http://ct.googleapis.com/testtube",
-            "id": "sMyD5aX5fWuvfAnMKEkEhyrH6IsTLGNQt8b9JuFsbHc="
-        },
-        "google_argon2018": {
-            "url": "https://ct.googleapis.com/logs/argon2018",
-            "id": "pFASaQVaFVReYhGrN7wQP2KuVXakXksXFEU+GyIQaiU="
-        },
-        "digicert": {
-            "url": "https://ct1.digicert-ct.com/log",
-            "id": "VhQGmi/XwuzT9eG9RLI+x0Z2ubyZEVzA75SYVdaJ0N0="
-        },
-        "symantec_ct": {
-            "url": "https://ct.ws.symantec.com",
-            "id": "3esdK3oNT6Ygi4GtgWhwfi6OnQHVXIiNPRHEzbbsvsw="
-        },
-        "symantec_vega": {
-            "url": "https://vega.ws.symantec.com",
-            "id": "vHjh38X2PGhGSTNNoQ+hXwl5aSAJwIG08/aRfz7ZuKU="
-        },
-        "cnnic": {
-            "url": "https://ctserver.cnnic.cn",
-            "id": "pXesnO11SN2PAltnokEInfhuD0duwgPC7L7bGF8oJjg="
-        },
-        "cloudflare_nimbus2018": {
-            "url": "https://ct.cloudflare.com/logs/nimbus2018",
-            "id": "23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q="
-        }
+    "digicert": {
+      "url": "https://ct1.digicert-ct.com/log",
+      "id": "VhQGmi/XwuzT9eG9RLI+x0Z2ubyZEVzA75SYVdaJ0N0="
     },
-    "certificates": {
-        "<certificate-name>": {
-            "common_name": "<common-name>",
-            "alt_names": {
-                "<zone-name>": ["@", "<host-name>"]
-            },
-            "services": ["<service-name>"],
-            "tlsa_records": {
-                "zone-name": [
-                    "<host-name>",
-                    {
-                        "host": "<host-name>",
-                        "port": <port-number>,
-                        "usage": "pkix-ee",
-                        "selector": "spki",
-                        "protocol": "tcp",
-                        "ttl": 300
-                    }
-                ]
-            },
-            "dhparam_size": 2048,
-            "ecparam_curve": "secp384r1",
-            "key_types": ["rsa", "ecdsa"],
-            "key_size": 4096,
-            "key_curve": "secp384r1",
-            "key_passphrase": null,
-            "ocsp_must_staple": false,
-            "ocsp_responder_urls": ["http://ocsp.int-x3.letsencrypt.org"],
-            "ct_submit_logs": ["google_icarus", "google_pilot"],
-            "verify": [
-                443,
-                {
-                    "port": 25,
-                    "hosts": ["<domain-name>", "<domain-name>"],
-                    "starttls": "smtp",
-                    "key_types": ["rsa", "ecdsa"]
-                }
-            ]
-        }
+    "symantec_ct": {
+      "url": "https://ct.ws.symantec.com",
+      "id": "3esdK3oNT6Ygi4GtgWhwfi6OnQHVXIiNPRHEzbbsvsw="
     },
-    "authorizations": {
-        "<zone-name>": ["<host-name>", "<host-name>"]
+    "symantec_vega": {
+      "url": "https://vega.ws.symantec.com",
+      "id": "vHjh38X2PGhGSTNNoQ+hXwl5aSAJwIG08/aRfz7ZuKU="
     },
-    "http_challenges": {
-        "<domain-name>": "<challenge-directory>"
+    "cnnic": {
+      "url": "https://ctserver.cnnic.cn",
+      "id": "pXesnO11SN2PAltnokEInfhuD0duwgPC7L7bGF8oJjg="
+    },
+    "cloudflare_nimbus2018": {
+      "url": "https://ct.cloudflare.com/logs/nimbus2018",
+      "id": "23Sv7ssp7LH+yj5xbSzluaq7NveEcYPHXZ1PN7Yfv2Q="
     }
+  },
+  "certificates": [
+    {
+      "common_name": "<common-name>",
+      "alt_names": [ "@", "<host-name>" ],
+      "services": [ "<service-name>" ],
+      "dhparam_size": 2048,
+      "ecparam_curve": "secp384r1",
+      "key_types": [ "rsa", "ecdsa" ],
+      "key_size": 4096,
+      "key_curve": "secp384r1",
+      "key_passphrase": null,
+      "ocsp_must_staple": false,
+      "ocsp_responder_urls": [ "http://ocsp.int-x3.letsencrypt.org" ],
+      "ct_submit_logs": [ "google_icarus", "google_pilot" ],
+      "verify": [
+        443,
+        {
+          "port": 25,
+          "hosts": [ "<domain-name>", "<domain-name>" ],
+          "starttls": "smtp",
+          "key_types": [ "rsa", "ecdsa" ]
+        }
+      ]
+    }
+  ],
+  "http_challenges": {
+    "<domain-name>": "<challenge-directory>"
+  }
 }
 

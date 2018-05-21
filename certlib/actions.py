@@ -1,5 +1,6 @@
 import abc
 import contextlib
+import datetime
 import os
 import shutil
 import stat
@@ -12,21 +13,20 @@ from acme import client
 from cryptography.hazmat.primitives import serialization
 
 from .acme import handle_authorizations
-from .config import Configuration, FileManager
+from .config import Configuration
 from .context import CertificateContext
 from .context import CertificateItem
 from .crypto import PrivateKey
 from .logging import log
-from .utils import ArchiveOperation, FileOwner, Hooks, commit_file_transactions, dirmode, prune_achives
+from .utils import ArchiveOperation, FileOwner, Hooks, commit_file_transactions, dirmode
 from .verify import verify_certificate_installation
 
 
 class Action(metaclass=abc.ABCMeta):
     has_acme_client = True
 
-    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client: Optional[client.ClientV2]):
+    def __init__(self, config: Configuration, args: Namespace, acme_client: Optional[client.ClientV2]):
         self.config = config
-        self.fs = fs
         self.args = args
         self.acme_client = acme_client
         assert (not self.has_acme_client) or acme_client
@@ -54,50 +54,12 @@ def _process_symlink(root: str, name: str, target: str, link: str):
             log.debug("symlink '%s' removed", link_path)
 
 
-def update_links(context: CertificateContext):
-    root = context.fs.directory('link')
-    if not root:
-        return
-
+def update_links(root: str, context: CertificateContext):
     log.info('Update symlinks')
 
     with log.prefix('  - '):
-        # Create main target directory
-        os.makedirs(os.path.join(root, context.common_name), mode=0o755, exist_ok=True)
-
-        target = context.filepath('param')
-        _process_symlink(root, context.common_name, target, 'params.pem')
-
-        for item in context:
-            with log.prefix('[{}] '.format(item.type.upper())):
-                # Private Keys
-                target = item.filepath('private_key')
-                _process_symlink(root, context.common_name, target, item.type + '.key')
-
-                target = item.filepath('full_key')
-                _process_symlink(root, context.common_name, target, 'full.' + item.type + '.key')
-
-                # Certificate
-                target = item.filepath('certificate')
-                _process_symlink(root, context.common_name, target, 'cert.' + item.type + '.pem')
-
-                target = item.filepath('chain')
-                _process_symlink(root, context.common_name, target, 'chain.' + item.type + '.pem')
-
-                target = item.filepath('full_certificate')
-                _process_symlink(root, context.common_name, target, 'cert+root.' + item.type + '.pem')
-
-                # OCSP
-                target = item.filepath('ocsp')
-                _process_symlink(root, context.common_name, target, item.type + '.ocsp')
-
-                # SCT
-                for ct_log in context.config.ct_submit_logs:
-                    target = item.filepath('sct', ct_log_name=ct_log.name)
-                    _process_symlink(root, context.common_name, target, ct_log.name + '.' + item.type + '.sct')
-
         # process directories links (alt names -> common name)
-        for name in context.domain_names:
+        for name in context.alt_names:
             if name == context.common_name:
                 continue
             link_path = os.path.join(root, name)
@@ -117,8 +79,8 @@ def update_links(context: CertificateContext):
 class CheckAction(Action):
     has_acme_client = False
 
-    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
-        super().__init__(config, fs, args, acme_client)
+    def __init__(self, config: Configuration, args: Namespace, acme_client=None):
+        super().__init__(config, args, acme_client)
         self._checked = dict()
 
     @staticmethod
@@ -150,50 +112,76 @@ class CheckAction(Action):
 
         owner = context.config.fileowner
         with log.prefix("  - "):
-            self._check_file(context.filepath('param'), 0o640, owner)
+            self._check_file(context.params_path, 0o640, owner)
         for item in context:
             with log.prefix("  - [{}] ".format(item.type.upper())):
                 # Private Keys
-                self._check_file(item.filepath('private_key'), 0o640, owner)
-                self._check_file(item.filepath('full_key'), 0o640, owner)
+                self._check_file(item.key_path(), 0o640, owner)
+                self._check_file(item.key_path(full=True), 0o640, owner)
 
                 # Certificate
-                self._check_file(item.filepath('certificate'), 0o644, owner)
-                self._check_file(item.filepath('chain'), 0o644, owner)
-                self._check_file(item.filepath('full_certificate'), 0o644, owner)
+                self._check_file(item.certificate_path(), 0o644, owner)
+                self._check_file(item.certificate_path(full=True), 0o644, owner)
+                self._check_file(item.chain_path(), 0o644, owner)
 
                 # OCSP
-                self._check_file(item.filepath('ocsp'), 0o644, owner)
+                self._check_file(item.ocsp_path(), 0o644, owner)
 
                 for ct_log in context.config.ct_submit_logs:
-                    self._check_file(item.filepath('sct', ct_log_name=ct_log.name), 0o644, owner)
+                    self._check_file(item.sct(ct_log), 0o644, owner)
 
         # check symlinks
-        update_links(context)
+        update_links(self.config.data_dir, context)
 
     def finalize(self):
         owner = FileOwner(os.getuid(), os.getgid(), True)
-        resource = self.fs.directory('resource')
+        account_dir = self.config.account_dir
         # Check global file here
         with log.prefix("  - "):
-            self._check_file(os.path.join(resource, 'client.key'), 0o600, owner)
-            self._check_file(os.path.join(resource, 'registration.json'), 0o600, owner)
+            self._check_file(os.path.join(account_dir, 'client.key'), 0o600, owner)
+            self._check_file(os.path.join(account_dir, 'registration.json'), 0o600, owner)
+
+
+def prune_achives(archive_dir: Optional[str], days: int):
+    if not archive_dir or days <= 0:
+        return None
+
+    try:
+        filenames = os.listdir(archive_dir)
+    except FileNotFoundError:
+        return
+
+    prune_date = datetime.datetime.now() - datetime.timedelta(days=days)
+    prune_date = prune_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    log.debug("Pruning archives older than %s in '%s'", prune_date, archive_dir)
+
+    for entry in filenames:
+        try:
+            date = datetime.datetime.strptime(entry, '%Y_%m_%d_%H%M%S')
+        except ValueError:
+            continue
+        if date < prune_date:
+            try:
+                log.info("removing archive %s", entry)
+                shutil.rmtree(os.path.join(archive_dir, entry))
+            except Exception as e:
+                log.warning("error removing acrhive dir %s: %s", entry, str(e))
 
 
 class PruneAction(Action):
     has_acme_client = False
 
-    def __init__(self, config: Configuration, fs: FileManager, args: Namespace, acme_client=None):
-        super().__init__(config, fs, args, acme_client)
+    def __init__(self, config: Configuration, args: Namespace, acme_client=None):
+        super().__init__(config, args, acme_client)
         self.days = self.args.days
         if self.days < 0:
             self.days = self.config.int('archive_days')
 
     def run(self, context: CertificateContext):
-        prune_achives(os.path.join(self.fs.directory('archive'), context.name), self.days)
+        prune_achives(os.path.join(self.config.data_dir, 'archives', context.name), self.days)
 
     def finalize(self):
-        prune_achives(os.path.join(self.fs.directory('archive'), 'client'), self.days)
+        prune_achives(os.path.join(self.config.data_dir, 'archives', 'account'), self.days)
 
 
 class RevokeAction(Action):
@@ -220,19 +208,19 @@ class RevokeAction(Action):
                     log.warning('certificate not found')
 
         with log.prefix("  - "):
-            ops = [ArchiveOperation('certificates', context.filepath('param'))]
+            ops = [ArchiveOperation('certificates', context.params_path)]
             for item in revoked_certificates:  # type: CertificateItem
-                ops.append(ArchiveOperation('certificates', item.filepath('certificate')))
-                ops.append(ArchiveOperation('certificates', item.filepath('chain')))
-                ops.append(ArchiveOperation('certificates', item.filepath('full_certificate')))
+                ops.append(ArchiveOperation('certificates', item.certificate_path()))
+                ops.append(ArchiveOperation('certificates', item.certificate_path(full=True)))
+                ops.append(ArchiveOperation('certificates', item.chain_path()))
 
-                ops.append(ArchiveOperation('keys', item.filepath('private_key')))
-                ops.append(ArchiveOperation('keys', item.filepath('full_key')))
+                ops.append(ArchiveOperation('keys', item.key_path()))
+                ops.append(ArchiveOperation('keys', item.key_path(full=True)))
 
-                ops.append(ArchiveOperation('meta', item.filepath('oscp')))
+                ops.append(ArchiveOperation('meta', item.ocsp_path()))
                 for ct_log in context.config.ct_submit_logs:
-                    ops.append(ArchiveOperation('meta', item.filepath('sct', ct_log_name=ct_log.name)))
-            commit_file_transactions(ops, self.fs.archive_dir(context.name))
+                    ops.append(ArchiveOperation('meta', item.sct_path(ct_log)))
+            commit_file_transactions(ops, self.config.archive_dir(context.name))
 
 
 class AuthAction(Action):
@@ -242,12 +230,12 @@ class AuthAction(Action):
         with log.prefix("  - "):
             # until acme provide a clean way to create an order without using a CSR, we just create a dummy CSR …
             key = PrivateKey.create('rsa', 2048)
-            csr = key.create_csr(context.common_name, context.domain_names, context.config.ocsp_must_staple)
+            csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
             order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
             # … and remove it from the order afterward
             order.update(csr_pem=None)
 
-            handle_authorizations(order, self.fs, self.acme_client, self.config.int('max_authorization_attempts'),
+            handle_authorizations(order, self.config.http_challenge_directory, self.acme_client, self.config.int('max_authorization_attempts'),
                                   self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
 

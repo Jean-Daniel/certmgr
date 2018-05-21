@@ -68,7 +68,8 @@ class PrivateKey(metaclass=abc.ABCMeta):
             x509.NameAttribute(x509.NameOID.COMMON_NAME, common_name)
         ]
         req = x509.CertificateSigningRequestBuilder(x509.Name(subject))
-        req = req.add_extension(x509.SubjectAlternativeName(general_names=(x509.DNSName(name) for name in alt_names)), critical=True)
+        if alt_names:
+            req = req.add_extension(x509.SubjectAlternativeName(general_names=(x509.DNSName(name) for name in alt_names)), critical=True)
 
         if must_staple:
             req = req.add_extension(x509.TLSFeature([x509.TLSFeatureType.status_request]), critical=False)

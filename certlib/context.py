@@ -1,12 +1,13 @@
 import contextlib
 import datetime
+import os
 import re
 import struct
 from typing import List, Optional, Tuple
 
 from certlib.utils import get_key_cipher
 from . import AcmeError
-from .config import CertificateDef, FileManager
+from .config import CertificateDef
 from .crypto import Certificate, PrivateKey, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log
 from .ocsp import OCSP
@@ -17,7 +18,7 @@ _UNINITIALIZED = 'uninitialized'
 
 
 class CertificateItem(object):
-    __slots__ = ('type', 'params', 'context',
+    __slots__ = ('type', 'params', 'context', 'data_dir',
                  '_scts', '_ocsp_response', '_ocsp_response_updated',
                  '_key', '_chain', '_certificate', '_certificate_updated')
 
@@ -25,6 +26,7 @@ class CertificateItem(object):
         self.type = ty
         self.params = params
         self.context = context
+        self.data_dir = os.path.join(context.data_dir, ty)
 
         self._scts = {}
 
@@ -35,9 +37,6 @@ class CertificateItem(object):
         self._chain = _UNINITIALIZED  # type: Optional[List[Certificate]]
         self._certificate = _UNINITIALIZED  # type: Optional[Certificate]
         self._certificate_updated = False
-
-    def filepath(self, file_type: str, **kwargs):
-        return self.context.filepath(file_type, key_type=self.type, **kwargs)
 
     @property
     def name(self):
@@ -57,9 +56,11 @@ class CertificateItem(object):
             self._key = self._load_key()
         return self._key
 
+    def key_path(self, full=False):
+        return os.path.join(self.data_dir, 'keys', 'key+cert.pem' if full else 'key.pem')
+
     def save_key(self, owner: FileOwner, archive: bool = True, with_certificate: bool = False) -> Optional[WriteOperation]:
-        file_type = 'full_key' if with_certificate else 'private_key'
-        key_path = self.filepath(file_type)
+        key_path = self.key_path(full=with_certificate)
         if not key_path:
             return None
 
@@ -77,7 +78,7 @@ class CertificateItem(object):
         return op
 
     def _load_key(self) -> Optional[PrivateKey]:
-        key_file_path = self.filepath('private_key')
+        key_file_path = self.key_path()
         try:
             return PrivateKey.load(key_file_path, lambda: self.context.key_cipher(force_prompt=True).passphrase)
         except Exception as e:
@@ -89,9 +90,11 @@ class CertificateItem(object):
             self._load_certificate_and_chain()
         return self._certificate
 
+    def certificate_path(self, full=False):
+        return os.path.join(self.data_dir, 'cert+root.pem' if full else 'cert.pem')
+
     def save_certificate(self, owner: FileOwner, root: Optional[Certificate] = None) -> Optional[WriteOperation]:
-        file_type = 'full_certificate' if root else 'certificate'
-        cert_path = self.filepath(file_type)
+        cert_path = self.certificate_path(full=root is not None)
         if not cert_path:
             return None
         op = ArchiveAndWriteOperation('certificates', cert_path, mode=0o644, owner=owner)
@@ -105,8 +108,11 @@ class CertificateItem(object):
             self._load_certificate_and_chain()
         return self._chain
 
+    def chain_path(self):
+        return os.path.join(self.data_dir, 'chain.pem')
+
     def save_chain(self, owner: FileOwner) -> Optional[WriteOperation]:
-        chain_path = self.filepath('chain')
+        chain_path = self.chain_path()
         if not chain_path:
             return None
         op = ArchiveAndWriteOperation('certificates', chain_path, mode=0o644, owner=owner)
@@ -125,7 +131,7 @@ class CertificateItem(object):
         return self._certificate_updated
 
     def _load_certificate_and_chain(self):
-        cert_path = self.filepath('certificate')
+        cert_path = self.certificate_path()
         try:
             certificate, chain = load_full_chain_file(cert_path)
             if self._certificate is _UNINITIALIZED:
@@ -183,7 +189,7 @@ class CertificateItem(object):
     @property
     def ocsp_response(self) -> Optional[OCSP]:
         if self._ocsp_response is _UNINITIALIZED:
-            self._ocsp_response = OCSP.load(self.filepath('ocsp'))
+            self._ocsp_response = OCSP.load(self.ocsp_path())
 
         return self._ocsp_response
 
@@ -196,8 +202,11 @@ class CertificateItem(object):
     def ocsp_updated(self):
         return self._ocsp_response_updated
 
+    def ocsp_path(self):
+        return os.path.join(self.data_dir, 'oscp.der')
+
     def save_ocsp(self, owner: FileOwner) -> Optional[WriteOperation]:
-        file_path = self.filepath('ocsp')
+        file_path = self.ocsp_path()
         if not file_path:
             return None
         ocsp_response = self.ocsp_response
@@ -215,8 +224,11 @@ class CertificateItem(object):
     def update_sct(self, ct_log: SCTLog, sct_data: SCTData):
         self._scts[ct_log.name] = sct_data, sct_data != self._scts.get(ct_log.name)
 
+    def sct_path(self, ct_log: SCTLog):
+        return os.path.join(self.data_dir, 'scts', ct_log.name + '.sct')
+
     def save_sct(self, ct_log: SCTLog, owner: FileOwner) -> Optional[WriteOperation]:
-        file_path = self.filepath('sct', ct_log_name=ct_log.name)
+        file_path = self.sct_path(ct_log)
         if not file_path:
             return None
         sct_data, _ = self.sct(ct_log)
@@ -233,7 +245,7 @@ class CertificateItem(object):
 
     def _load_sct(self, ct_log: SCTLog) -> Optional[SCTData]:
         try:
-            sct_file_path = self.filepath('sct', ct_log_name=ct_log.name)
+            sct_file_path = self.sct_path(ct_log)
             with open(sct_file_path, 'rb') as sct_file:
                 sct = sct_file.read()
                 version, logid, timestamp, extensions_len = struct.unpack('>b32sQH', sct[:43])
@@ -255,9 +267,9 @@ class CertificateContext(object):
 
     # __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
 
-    def __init__(self, config: CertificateDef, fs: FileManager):
+    def __init__(self, config: CertificateDef, data_dir: str):
         self.config = config
-        self.fs = fs
+        self.data_dir = os.path.join(data_dir, config.name)
 
         self._dhparams = _UNINITIALIZED  # type: bytes
         self._ecparams = _UNINITIALIZED  # type: bytes
@@ -266,18 +278,10 @@ class CertificateContext(object):
         pkey = config.private_key
         self._items = [CertificateItem(key_type, pkey.params(key_type), self) for key_type in config.key_types]  # type: List[CertificateItem]
 
-        self._transactions = []
         self._key_cipher = _UNINITIALIZED  # type: Optional[KeyCipherData]
 
     def __iter__(self):
         return self._items.__iter__()
-
-    def filepath(self, file_type: str, **kwargs):
-        return self.fs.filepath(file_type, name=self.name, **kwargs)
-
-    @property
-    def name(self) -> str:
-        return self.config.name
 
     @property
     def updated(self) -> bool:
@@ -296,13 +300,16 @@ class CertificateContext(object):
         return self._ecparams
 
     @property
+    def params_path(self):
+        return os.path.join(self.data_dir, 'params.pem')
+
+    @property
     def params_updated(self):
         return self._params_updated
 
     def save_params(self, owner: FileOwner) -> Optional[WriteOperation]:
-        param_file = self.filepath('param')
-        if not param_file:
-            return None
+        param_file = self.params_path
+
         dhparams = self._dhparams
         ecparams = self._ecparams
         op = ArchiveAndWriteOperation('certificates', param_file, mode=0o640, owner=owner)
@@ -323,8 +330,16 @@ class CertificateContext(object):
         self._ecparams = ecparams
 
     @property
+    def name(self) -> str:
+        return self.config.common_name
+
+    @property
     def common_name(self) -> str:
         return self.config.common_name
+
+    @property
+    def alt_names(self):
+        return self.config.alt_names
 
     @property
     def domain_names(self):
@@ -339,15 +354,14 @@ class CertificateContext(object):
         self._dhparams = self._ecparams = None
 
         pem_data = None
-        param_file_path = self.filepath('param')
-        if param_file_path:
-            with contextlib.suppress(FileNotFoundError):
-                with open(param_file_path, 'rb') as f:
-                    pem_data = f.read()
+        param_file_path = self.params_path
+        with contextlib.suppress(FileNotFoundError):
+            with open(param_file_path, 'rb') as f:
+                pem_data = f.read()
 
         if not pem_data:
             for item in self:
-                certificate_file_path = item.filepath('certificate')
+                certificate_file_path = item.certificate_path()
                 with contextlib.suppress(FileNotFoundError), open(certificate_file_path, 'rb') as f:
                     pem_data = f.read()
                 break

@@ -1,45 +1,19 @@
-.. _bindtool: https://github.com/plinss/bindtool
-
 *******
-acmebot
+certmgr
 *******
 
 ACME protocol automatic certitificate manager.
 
 This tool acquires and maintains certificates from a certificate authority using the ACME protocol, similar to EFF's Certbot.
-While developed and tested using Let's Encrypt, the tool should work with any certificate authority using the ACME protocol.
+While developed and tested using Let's Encrypt, the tool should work with any certificate authority using the ACME v2 protocol.
 
 Features
 ========
 
 This tool is not intended as a replacement for Certbot and does not attempt to replicate all of Certbot's functionality,
-notably it does not modify configuration files of other services,
-or provide a server to perform stand-alone domain validation.
-It does however, do a few things that Certbot does not,
-simplifying certificate manangement in more advanced environments.
+notably it does not modify configuration files of other services, or provide a server to perform stand-alone domain validation.
+It does however, do a few things that Certbot does not, simplifying certificate manangement in more advanced environments.
 
-Note about the fork
-========
-
-This fork is a stripped down version of the original tool. It supports only http challenge (no DNS support) and remove all the shared private key stuff to manage simple certificate/private key pair that are always renew together.
-
-It also provide a additional functionality: creating an organized fs view of the generated certificates using domains names instead of internal certificate name.
-
-For instance, if you create a certificate named ``mysite`` with 2 DNS names www.example.com and mail.example.com, this tools can create the following directory layout::
-
-    rootdir/
-        www.example.com/
-            cert.ecdsa.pem
-            cert.rsa.pem
-            ecdsa.key
-            rsa.key
-            …
-        mail.example.com/
-            …
-
-This directory only contains symlinks to the original acmebot files. It is useful to be able to configure your services without having to know the acmebot configuration internal.
-
-If you decide to update the configuration to create 2 certificates (one for www and one for mail), or simply change the certificate internal name, you don't have to reconfigure all your services.
 
 Master/Follower Mode
 -----------------
@@ -82,15 +56,63 @@ Only OCSP responses with a "good" status will be stored.
 Encrypted Private Keys
 ----------------------
 
-Primary and backup private keys can optionally be encrypted using a passphrase.
+Domain and acme client private keys can optionally be encrypted using a passphrase.
 
 
-Configurable Output File Names
+Output File Names
 ------------------------------
 
-Server administrators often develop their own file naming conventions or need to match naming conventions of other tools.
-The names and output directories of all certificate, key, and related files are fully configurable.
-The defaults are intended for standard Debian installations.
+To simplify service configuration, this tool output certifiates, keys and other files using stables predictables names.
+If system administrators need special naming conventions, the recommanded way is to create symlinks.
+
+This tool generates certificate using the following layout::
+
+    data_dir/
+        account/
+            client.key
+            registration.json
+        archives/
+            …
+        <common_name>/
+            params.pem
+            <key_type>/
+                cert.pem
+                chain.pem
+                cert+root.pem
+                oscp.der
+                keys/
+                    key.pem
+                    key+cert.pem
+                scts/
+                    <ct_log_name>.sct
+        <alt_name>/ -> <common_name>
+
+
+When configuring a service, you should always use the path that match the domain you need (even if this is an alt name and not a common name).
+So if you later change your configuration to generate a certificate per domain name instead of one with alt names, your service configuration will
+still be working.
+
+For instance, you may want a certificate with common name ``www.example.com`` and alt name ``example.com``, and then create 2 virtual hosts in nginx::
+
+    server {
+        server_name example.com;
+
+        ssl_certificate         /etc/certmgr/example.com/rsa/cert.pem;
+        …
+
+        return  301 https://www.example.com$request_uri;
+    }
+
+    server {
+        server_name www.example.com;
+
+        ssl_certificate         /etc/certmgr/www.example.com/rsa/cert.pem;
+        …
+
+    }
+
+You may want to use ``/etc/certmgr/www.example.com/rsa/cert.pem`` for both server, but if you later change the certmgr config to generate 2 certificates instead of one,
+or switch the common name and alt name, your nginx configuration will be broken.
 
 
 Configurable Deployment Hooks
@@ -117,7 +139,7 @@ Wildcard certificates may be issued when using the V2 API (but it requires DNS c
 Installation
 ============
 
-Requires Python 3.5+ and the acme and py3dns packages.
+Requires Python 3.5+ and the acme packages.
 
 On Debian Jessie, these can be installed via::
 
@@ -129,21 +151,19 @@ On Debian Stretch::
     sudo apt-get install python3-pip libssl-dev libffi-dev
     sudo pip3 install -r requirements.txt
 
-Clone this repository or download the ``acmebot`` file and install it on your server.
-Copy the ``acmebot.example.json`` file to ``acmebot.json`` and edit the configuration options.
-The configuration file can be placed in the current directory that the tool is run from,
-the /etc/acmebot directory,
-or the same directory that the acmebot tool is installed in.
+Clone this repository and install it on your server.
+Copy the ``certmgr.example.json`` file to ``certmgr.json`` and edit the configuration options.
+The configuration file can be placed in the current directory that the tool is run from, in the /etc/certmgr directory,
+or int the same directory that the certmgr tool is installed in.
 
-By default, debug level output will be written to a log file.
+By default, info level output will be written to a log file.
 A configuration file for logrotate is provided in the logrotate.d directory,
 you may want to copy, or create a link to this file in /etc/logrotate.d.
 
 Optional: some services require a full certificate chain including the root (OSCP stapling on Nginx, for example).
-In order to generate these files,
-place a copy of the root certificates from your certificate authority of choice in the same directory as the configuration file with the file names ``root_cert.rsa.pem`` and ``root_cert.ecdsa.pem`` for RSA and ECDSA certificate roots respectively.
-Note that the root certificates are the those used to sign RSA and ECDSA client certificates,
-and may not necessarily be of the same type,
+In order to generate these files, place a copy of the root certificates from your certificate authority of choice in
+the same directory as the configuration file with the file names ``root_cert.rsa.pem`` and ``root_cert.ecdsa.pem`` for RSA and ECDSA certificate roots respectively.
+Note that the root certificates are the those used to sign RSA and ECDSA client certificates, and may not necessarily be of the same type,
 e.g. Let's Encrypt currently signs ECDSA certificates with an RSA root.
 If your certificate authority uses RSA certificate to sign ECDSA certificates types, place that RSA root certificate in ``root_cert.ecdsa.pem``.
 The root certificate for Let's Encrypt can be obtained `here <https://letsencrypt.org/certificates/>`_.
@@ -162,7 +182,6 @@ rather than demonstrate a basic simple configuration.
 
 The only items that must be present in the configuration file to create and maintain a certificate are your account email address,
 and the file name, and subject alternative names for the certificate.
-By default, the common name of the certificate will be the same as the certificate file name.
 
 For example::
 
@@ -170,13 +189,14 @@ For example::
         "account": {
             "email": "admin@example.com"
         },
-        "certificates": {
-            "example.com": {
+        "certificates": [
+            {
+                "name": example.com,
                 "alt_names": {
                     "example.com": ["@", "www"]
                 }
             }
-        }
+        ]
     }
 
 will create a certificate named ``example.com``,
@@ -185,8 +205,7 @@ and the subject alternative names of ``example.com`` and ``www.example.com``.
 
 As many certificates as desired may be configured.
 The number of alternative names is limited by the certificate authority (Let's Encrypt currently allows 100).
-Alternative names are specified on a DNS zone basis,
-multiple zones may be specified per certificate.
+Alternative names are specified on a DNS zone basis, multiple zones may be specified per certificate.
 The host name ``"@"`` is used for the name of the zone itself.
 
 
@@ -216,33 +235,29 @@ For the first run you may wish to select detailed output to see exactly what the
 
     acmebot --debug
 
-If all goes well,
-the tool will generate a public/private key pair used for client authentication to the certificate authority,
+If all goes well, the tool will
+generate a public/private key pair used for client authentication to the certificate authority,
 register an account with the certificate authority,
 prompt to accept the certificate authority's terms of service,
 obtain authorizations for each configured domain name,
 generate primary private keys as needed for the configured certificates,
 issue certificates,
-generate backup private keys,
 generate custom Diffie-Hellman parameters,
-retrieve Signed Certificate Timestamps from certificate transparency logs,
-and install the certificates and private keys into /etc/ssl/certs and /etc/ssl/private.
+retrieve OCSP responses,
+retrieve Signed Certificate Timestamps from certificate transparency logs.
 
 If desired, you can test the tool using Let's Encrypt's staging server.
 To do this, specify the staging server's directory URL in the ``acme_directory_url`` setting.
 See `Staging Environment <https://letsencrypt.org/docs/staging-environment/>`_ for details.
 When switching from the staging to production servers,
-you should delete the client key and registration files (/var/local/acmebot/\*.json) to ensure a fresh registration in the production environment.
+the tool will archive the client key and registration files to ensure a fresh registration in the production environment.
 
 
 File Location
 =============
 
 After a successful certificate issuance,
-up to twenty one files will be created per certificate.
-
-The locations for these files can be controlled via the ``directories`` section of the configuration file.
-The default locations are used here for brevity.
+thirty files will be created per certificate.
 
 Output files will be written as a single transaction,
 either all files will be written,
@@ -253,38 +268,33 @@ This is designed to prevent a mismatch between certificates and private keys sho
 Private Keys
 ------------
 
-Two private key files will be created in /etc/ssl/private for each key type.
-The primary: ``<private-key-name>.<key-type>.key``; and a backup key: ``<private-key-name>_backup.<key-type>.key``.
+One private key files will be created for each key type.
 
-The private key files will be written in PEM format and will be readable by owner and group.
+The private key files will be written in PEM format and will only be readable by owner and group.
 
 
 Certificate Files
 -----------------
 
-Two certificate files will be created for each key type,
-one in /etc/ssl/certs, named ``<certificate-name>.<key-type>.pem``,
-containing the certificate,
+Two certificates files may be created for each key type.
+One named ``cert.pem``, containing the certificate,
 followed by any intermediate certificates sent by the certificate authority,
 followed by custom Diffie-Hellman and elliptic curve paramaters;
-the second file will be created in /etc/ssl/private, named ``<certificate-name>_full.<key-type>.key``,
+The second file may be created in ```keys``, named ``key+cert.key``,
 and will contain the private key,
 followed by the certificate,
 followed by any intermediate certificates sent by the certificate authority,
 followed by custom Diffie-Hellman and elliptic curve paramaters.
 
-The ``<certificate-name>_full.<key-type>.key`` file is useful for services that require both the private key and certificate to be in the same file,
-such as ZNC.
+The ``key+cert.key`` file is useful for services that require both the private key and certificate to be in the same file, such as ZNC.
 
 
 Intermediate Certificate Chain File
 -----------------------------------
 
 If the certificate authority uses intermediate certificates to sign your certificates,
-a file will be created in /etc/ssl/certs, named ``<certificate-name>_chain.<key-type>.pem`` for each key type,
+a file will be created named ``chain.pem`` for each key type,
 containing the intermediate certificates sent by the certificate authority.
-
-This file will not be created if the ``chain`` directory is set to ``null``.
 
 Note that the certificate authority may use a different type of certificate as intermediates,
 e.g. an ECDSA client certificate may be signed by an RSA intermediate,
@@ -295,8 +305,8 @@ Full Chain Certificate File
 ---------------------------
 
 If the ``root_cert.<key-type>.pem`` file is present (see `Installation <#installation>`_),
-then an additional certificate file will be generated in /etc/ssl/certs,
-named ``<certificate-name>+root.<key-type>.pem`` for each key type.
+then an additional certificate file will be generated,
+named ``cert+root.pem`` for each key type.
 This file will contain the certificate,
 followed by any intermediate certificates sent by the certificate authority,
 followed by the root certificate,
@@ -312,17 +322,16 @@ Diffie-Hellman Parameter File
 -----------------------------
 
 If custom Diffie-Hellman parameters or a custom elliptical curve are configured,
-a file will be created in /etc/ssl/params, named ``<certificate-name>_param.pem``,
-containing the Diffie-Hellman parameters and elliptical curve paramaters.
+a file ``params.pem`` will be created, containing the Diffie-Hellman parameters and elliptical curve paramaters.
 
-This file will not be created if the ``param`` directory is set to ``null``.
+This file will not be created if ``dhparam_size`` is 0 and ``ecparam_curve`` is ``null``.
 
 
 
 Signed Certificate Timestamp (SCT) Files
 ----------------------------------------
 
-One additional file will be created for each key type and configured certificate transparency log in ``/etc/ssl/scts/<certificate-name>/<key-type>/<log-name>.sct``.
+One additional file will be created for each key type and configured certificate transparency log in ``sct/<log-name>.sct``.
 These files contain SCT information in binary form suitable to be included in a TLS extension.
 By default, SCTs will be retrieved from the Google Icarus and Google Pilot certificate transparency logs.
 The Google Test Tube certificate transparency log can be used with the Let's Encrypt staging environment for testing.
@@ -330,23 +339,23 @@ The Google Test Tube certificate transparency log can be used with the Let's Enc
 
 OCSP Response Files
 -------------------
-One OCSP response file will be created for each key type,
-in /etc/ssl/ocsp, named ``<certificate-name>.<key_type>.ocsp``.
+One OCSP response file ``ocsp.der`` will be created for each key type.
 These files contain OCSP responses in binary form suitable to be used as stapled OCSP responses.
 
 
 Archive Directory
 -----------------
 
-Whenever exsiting files are replaced by subsequent runs of the tool,
+Whenever existing files are replaced by subsequent runs of the tool,
 for example during certificate renewal or private key rollover,
-all existing files are preserved in the archive directory, /etc/ssl/archive.
+all existing files are preserved in the ``archives`` directory.
 
 Within the archive directory,
-a directory will be created with the name of the private key,
+a directory will be created with the name of the certificate,
 containing a datestamped directory with the time of the file transaction (YYYY_MM_DD_HHMMSS).
 All existing files will be moved into the datestamped directory should they need to be recovered.
 
+Archived directory are automatically deleted after ``archive_days`` days (defaults to 30 days).
 
 Server Configuration
 ====================
@@ -362,13 +371,13 @@ Another good practice it to isolate the configuration for each certificate into 
 for example using Apache,
 create the file /etc/apache2/snippets/ssl/example.com containing::
 
-    SSLCertificateFile    /etc/ssl/certs/example.com.rsa.pem
-    SSLCertificateKeyFile /etc/ssl/private/example.com.rsa.key
-    CTStaticSCTs          /etc/ssl/certs/example.com.rsa.pem /etc/ssl/scts/example.com/rsa        # requires mod_ssl_ct to be installed
+    SSLCertificateFile    /etc/certmgr/example.com/rsa/cert.pem
+    SSLCertificateKeyFile /etc/certmgr/example.com/rsa/keys/key.pem
+    CTStaticSCTs          /etc/certmgr/example.com/rsa/cert.pem /etc/certmgr/example.com/rsa/scts        # requires mod_ssl_ct to be installed
 
-    SSLCertificateFile    /etc/ssl/certs/example.com.ecdsa.pem
-    SSLCertificateKeyFile /etc/ssl/private/example.com.ecdsa.key
-    CTStaticSCTs          /etc/ssl/certs/example.com.ecdsa.pem /etc/ssl/scts/example.com/ecdsa    # requires mod_ssl_ct to be installed
+    SSLCertificateFile    /etc/certmgr/example.com/ecdsa/cert.pem
+    SSLCertificateKeyFile /etc/certmgr/example.com/ecdsa/keys/key.pem
+    CTStaticSCTs          /etc/certmgr/example.com/ecdsa/cert.pem /etc/certmgr/example.com/ecdsa/scts    # requires mod_ssl_ct to be installed
 
     Header always set Strict-Transport-Security "max-age=63072000"
 
@@ -380,20 +389,20 @@ For Nginx the /etc/nginx/snippets/ssl/example.com file would contain::
 
     ssl_ct on;                                                          # requires nginx-ct module to be installed
 
-    ssl_certificate         /etc/ssl/certs/example.com.rsa.pem;
-    ssl_certificate_key     /etc/ssl/private/example.com.rsa.key;
-    ssl_ct_static_scts      /etc/ssl/scts/example.com/rsa;              # requires nginx-ct module to be installed
-    ssl_stapling_file       /etc/ssl/ocsp/example.com.rsa.ocsp;
+    ssl_certificate         /etc/certmgr/example.com/rsa/cert.pem;
+    ssl_certificate_key     /etc/certmgr/example.com/rsa/keys/key.pem;
+    ssl_ct_static_scts      /etc/certmgr/example.com/rsa/scts;              # requires nginx-ct module to be installed
+    ssl_stapling_file       /etc/certmgr/example.com/rsa/ocsp.der;
 
-    ssl_certificate         /etc/ssl/certs/example.com.ecdsa.pem;       # requires nginx 1.11.0+ to use multiple certificates
-    ssl_certificate_key     /etc/ssl/private/example.com.ecdsa.key;
-    ssl_ct_static_scts      /etc/ssl/scts/example.com/ecdsa;            # requires nginx-ct module to be installed
-    ssl_stapling_file       /etc/ssl/ocsp/example.com.ecdsa.ocsp;       # requires nginx 1.13.3+ to use with multiple certificates
+    ssl_certificate         /etc/certmgr/example.com/ecdsa/cert.pem;       # requires nginx 1.11.0+ to use multiple certificates
+    ssl_certificate_key     /etc/certmgr/example.com/ecdsa/keys/key.pem;
+    ssl_ct_static_scts      /etc/certmgr/example.com/ecdsa/scts;           # requires nginx-ct module to be installed
+    ssl_stapling_file       /etc/certmgr/example.com/ecdsa/ocsp.der;       # requires nginx 1.1x+ to use with multiple stapling file support (not supported in 1.14.0)
 
-    ssl_trusted_certificate /etc/ssl/certs/example.com+root.rsa.pem;    # not required if using ssl_stapling_file
+    ssl_trusted_certificate /etc/certmgr/example.com/rsa/cert+root.pem;    # not required if using ssl_stapling_file
 
-    ssl_dhparam             /etc/ssl/params/example.com_param.pem;
-    ssl_ecdh_curve secp384r1;
+    ssl_dhparam             /etc/certmgr/example.com/params.pem;
+    ssl_ecdh_curve          secp384r1;
 
     add_header Strict-Transport-Security "max-age=63072000" always;
 
@@ -405,16 +414,16 @@ and can be used via::
 Configuration
 =============
 
-The configuration file ``acmebot.json`` may be placed in the current working directory,
-in /etc/acmebot,
-or in the same directory as the acmebot tool is installed in.
+The configuration file ``certmgr.json`` may be placed in the current working directory,
+in /etc/certmgr,
+or in the same directory as the certmgr tool is installed in.
 A different configuration file name may be specified on the command line.
 If the specified file name is not an absolute path,
 it will be searched for in the same locations,
-e.g. ``acmebot --config config.json`` will load ``./config.json``, ``/etc/acmebot/config.json``, or ``<install-dir>/config.json``.
+e.g. ``certmgr --config config.json`` will load ``./config.json``, ``/etc/certmgr/config.json``, or ``<install-dir>/config.json``.
 The file must adhere to standard JSON format.
 
-The file ``acmebot.example.json`` provides a template of all configuration options and their default values.
+The file ``certmgr.example.json`` provides a template of all configuration options and their default values.
 Entries inside angle brackets ``"<example>"`` must be replaced (without the angle brackets),
 all other values may be removed unless you want to override the default values.
 
@@ -422,14 +431,21 @@ all other values may be removed unless you want to override the default values.
 Account
 -------
 
-Enter the email address you wish to associate with your account on the certificate authority.
-This email address may be useful in recovering your account should you lose access to your client key.
+* ``email`` specifies the email address you wish to associate with your account on the certificate authority.
+  This email address may be useful in recovering your account should you lose access to your client key.
+
+* ``passphrase`` specifies the passphrase used to encrypt client key.
+  The default value is ``null``.
+  A value of ``null`` or ``false`` will result in keys being written unencrypted.
+  A value of ``true`` will cause the password to be read from the command line, the environment, a prompt, or stdin.
+  A string value will be used as the passphrase without further input.
 
 Example::
 
     {
         "account": {
-            "email": "admin@example.com"
+            "email": "admin@example.com",
+            "passphrase": true
         },
         ...
     }
@@ -441,9 +457,17 @@ Settings
 Various settings for the tool.
 All of these need only be present when the desired value is different from the default.
 
+* ``log_file`` specifies the log file path.
+  log file can be turned off by setting this value to ``null``.
+  The default value is ``/var/log/certmgr/certmgr.log``.
 * ``log_level`` specifies the amount of information written into the log file.
   Possible values are ``null``, ``"normal"``, ``"verbose"``, ``"debug"``.
   ``"verbose"``, ``"debug"`` settings correlate to the ``--verbose`` and ``--debug`` command-line options.
+  ``null`` correlate to the ``--quiet`` command-line option.
+* ``data_dir`` specifies the path where the tool save all the generated files.
+  defaults to ``/etc/certmgr``.
+* ``"http_challenge_dir"`` specifies the path where to save the http challenges.
+  (see `HTTP Challenges <#http-challenges>`_),
 * ``color_output`` specifies if the output should be colorized.
   Colorized output will be suppressed on non-tty devices.
   This option may be overridden via command line options.
@@ -469,10 +493,10 @@ All of these need only be present when the desired value is different from the d
   Custom EC parameters can be turned off by setting this value to ``null``.
   You can run ``openssl ecparam -list_curves`` to find a list of available curves.
 * ``file_user`` specifies the name of the user that will own certificate and private key files.
-  The default value is ``"root"``.
+  The default value is ``null`` which corresponds user currently running the tool.
   Note that this tool must run as root, or another user that has rights to set the file ownership to this user.
 * ``file_group`` speficies the name of the group that will own certificate and private key files.
-  The default value is ``"ssl-cert"``.
+  The default value is ``null`` which corresponds to the group of the user currently running the tool.
   Note that this tool must run as root, or another user that has rights to set the file ownership to this group.
 * ``ocsp_must_staple`` specifies if the OCSP Must-Staple extension is added to certificates.
   The default value is ``false``.
@@ -503,6 +527,8 @@ All of these need only be present when the desired value is different from the d
   You can substitute the URL for Let's Encrypt's staging environment or another certificate authority.
 * ``verify`` specifies the default ports to perform installation verification on.
   The default value is ``null``.
+* ``lock_file`` path of the lock file used to ensure only a single instance of the tool run at once.
+  The default value is ``/var/run/certmgr.lock``.
 
 Example::
 
@@ -530,83 +556,6 @@ Example::
         },
         ...
     }
-
-
-Directories
------------
-
-Directories used to store the input and output files of the tool.
-Relative paths will be considered relative to the directory of configuration file.
-All of these need only be present when the desired value is different from the default.
-
-* ``pid`` specifies the directory to store a process ID file.
-  The default value is ``"/var/run"``.
-* ``log`` specifies the directory to store the log file.
-  The default value is ``"/var/log/acmebot"``.
-* ``link`` specifies the root directory for per domain name directory structure.
-  It defaults to ```null`` which means do not create symlinks.
-* ``resource`` specifies the directory to store the client key and registration files for the ACME account.
-  The default value is ``"/var/local/acmebot"``.
-* ``private_key`` specifies the directory to store primary private key files.
-  The default value is ``"/etc/ssl/private"``.
-* ``full_key`` specifies the directory to store primary private key files that include the certificate chain.
-  The default value is ``"/etc/ssl/private"``.
-  Full key files may be omitted by setting this to ``null``.
-* ``certificate`` specifies the directory to store certificate files.
-  The default value is ``"/etc/ssl/certs"``.
-* ``full_certificate`` specifies the directory to store full chain certificate files that include the root certificate.
-  The default value is ``"/etc/ssl/certs"``.
-  Full certificate files may be omitted by setting this to ``null``.
-* ``chain`` specifies the directory to store certificate intermediate chain files.
-  The default value is ``"/etc/ssl/certs"``.
-  Chain files may be omitted by setting this to ``null``.
-* ``param`` specifies the directory to store Diffie-Hellman parameter files.
-  The default value is ``"/etc/ssl/params"``.
-  Paramater files may be omitted by setting this to ``null``.
-* ``http_challenge`` specifies the directory to store ACME http-01 challenge files.
-  The default value is ``null``.
-* ``sct`` specifies the directory to store Signed Certificate Timestamp files.
-  The default value is ``"/etc/ssl/scts/<certificate-name>/<key-type>"``.
-  SCT files may be turned off by setting this to ``null``.
-* ``ocsp`` specifies the directory to store OCSP response files.
-  The default value is ``"/etc/ssl/ocsp"``.
-  OCSP response files may be turned off by setting this to ``null``.
-* ``archive`` specifies the directory to store older versions of files that are replaced by this tool.
-  The default value is ``"/etc/ssl/archive"``.
-* ``temp`` specifies the directory to write temporary files to.
-  A value of ``null`` results in using the system defined temp directory.
-  The temp directory must be on the same file system as the output file directories.
-  The default value is ``null``.
-
-Example::
-
-    {
-        ...
-        "directories": {
-            "pid": "/var/run",
-            "log": "/var/log/acmebot",
-            "link": "/var/lib/acmebot",
-            "resource": "/var/local/acmebot",
-            "private_key": "/etc/ssl/private",
-            "full_key": "/etc/ssl/private",
-            "certificate": "/etc/ssl/certs",
-            "full_certificate": "/etc/ssl/certs",
-            "chain": "/etc/ssl/certs",
-            "param": "/etc/ssl/params",
-            "http_challenge": "/var/www/{zone}/{host}/.well-known/acme-challenge",
-            "ocsp": "/etc/ssl/ocsp/",
-            "sct": "/etc/ssl/scts/{name}/{key_type}",
-            "archive": "/etc/ssl/archive"
-        },
-        ...
-    }
-
-Directory values are treated as Python format strings,
-fields available for directories are: ``name``, ``key_type``, ``suffix``, ``server``.
-The ``name`` field is the name of the private key or certificate.
-The ``"http_challenge"`` directory uses the fields: ``zone``, ``host``, and ``fqdn``,
-for the zone name, host name (without the zone), and the fully qualified domain name respectively.
-The ``host`` value will be ``"."`` if the fqdn is the same as the zone name.
 
 
 Services
@@ -662,15 +611,14 @@ Certificates
 This section defines the set of certificates to issue and maintain.
 The name of each certificate is used as the name of the certificate files.
 
-* ``common_name`` specifies the common name for the certificate.
-  If omitted, the name of the certificate will be used.
+* ``name`` specifies the common name for the certificate.
 * ``alt_names`` specifies the set of subject alternative names for the certificate.
   If specified, the common name of the certificate must be included as one of the alternative names.
   The alternative names are specified as a list of host names per DNS zone,
   so that associated DNS updates happen in the correct zone.
   The zone name may be used directly by specifying ``"@"`` for the host name.
   Multiple zones may be specified.
-  The default value is ``{ common_name: ["@"] }``.
+  The default value is ``{ <common_name>: ["@"] }``.
 * ``services`` specifies the list of services to be reloaded when the certificate is issued, renewed, or modified.
   This may be omitted.
 * ``dhparam_size`` specifies the number of bits to use for custom Diffie-Hellman paramaters for the certificate.
@@ -710,9 +658,9 @@ Example::
 
     {
         ...
-        "certificates": {
-            "example.com": {
-                "common_name": "example.com",
+        "certificates": [
+            {
+                "name": "example.com",
                 "alt_names": {
                     "example.com": ["@", "www"]
                 },
@@ -728,7 +676,7 @@ Example::
                 "ct_submit_logs": ["google_icarus", "google_pilot"],
                 "verify": [443]
             }
-        }
+        ]
     }
 
 
@@ -759,51 +707,14 @@ and
 ``http://www.example.com/.well-known/acme-challenge/file-name``
 
 Alternatively, if all challenge directories have a similar path,
-you may configure a single ``http_challenge`` directory using a python format string with the fields ``zone``, ``host``, and ``fqdn``.
+you may configure a single ``http_challenge`` directory using a python format string with the field ``fqdn``.
 
 Example::
 
     {
         ...
-        "directories": {
-            "http_challenge": "/var/www/{zone}/{host}/.well-known/acme-challenge"
-        },
-        ...
-    }
-
-
-File Name Patterns
-------------------
-
-All output file names can be overridden using standard Python format strings.
-Fields available for file names are: ``name``, ``key_type``, ``suffix``, ``server``.
-The ``name`` field is the name of the private key or certificate.
-
-* ``log`` specifies the name of the log file.
-* ``private_key`` specifies the name of primary private key files.
-* ``backup_key`` specifies the name of backup private key files.
-* ``full_key`` specifies the name of primary private key files that include the certificate chain.
-* ``certificate`` specifies the name of certificate files.
-* ``full_certificate`` specifies the name of certificate files that include the root certificate.
-* ``chain`` specifies the name of intemediate certificate files.
-* ``param`` specifies the name of Diffie-Hellman parameter files.
-* ``ocsp`` specifies the name of OCSP response files.
-* ``sct`` specifies the name of SCT files.
-
-Example::
-
-    {   ...
-        "file_names": {
-            "log": "acmebot.log",
-            "private_key": "{name}{suffix}.key",
-            "backup_key": "{name}_backup{suffix}.key",
-            "full_key": "{name}_full{suffix}.key",
-            "certificate": "{name}{suffix}.pem",
-            "full_certificate": "{name}+root{suffix}.pem",
-            "chain": "{name}_chain{suffix}.pem",
-            "param": "{name}_param.pem",
-            "ocsp": "{name}{suffix}.ocsp",
-            "sct": "{ct_log_name}.sct"
+        "settings": {
+            "http_challenge_dir": "/var/www/{fqdn}/.well-known/acme-challenge"
         },
         ...
     }
@@ -932,45 +843,55 @@ Example::
 Running the Tool
 ================
 
-On first run, the tool will generate a client key,
-register that key with the certificate authority,
-accept the certificate authority's terms and conditions,
-perform all needed domain authorizations,
-generate primary private keys,
-issue certificates,
-generate backup private keys,
-generate custom Diffie-Hellman parameters,
-install certificate and key files,
-update TLSA records,
-retrieve current Signed Certificate Timestamps (SCTs) from configured certificate transparency logs,
-retrieve OCSP staples,
-reload services associated to the certificates,
-and perform configured certificate installation verification.
+The tool support many actions. When no action are specified, the tool defaults to ``update``.
 
-Each subsequent run will ensure that all authorizations remain valid,
-check if any backup private keys have passed their expiration date,
-check if any certificate's expiration dates are within the renewal window,
-or have changes to the configured common name, or subject alternative names,
-or no longer match their associated private key files.
+Any command that require a valid acme account will first generate a client key and register that key with the certificate authority if needed.
 
-If a backup private key has passed its expiration date,
-the tool will rollover the private key or emit a warning recommending that the private key be rolled over,
-see the `Private Key Rollover <#private-key-rollover>`_ section for more information.
+For all commands, if you want to process only some certificates (and not all), you can pass the certificates' common name as parameter.
 
-If a certificate needs to be renewed or has been modified,
-the certificate will be re-issued and reinstalled.
+update
+------
+For each certificate:
+* perform all needed domain authorizations (unless --no-auth parameter is present)
+* generate private keys (if the key parameters did change or if the certificate need to be generated)
+* issue certificates (if certificate's expiration dates is within the renewal window, or if the configured common name, or subject alternative names did change)
+* generate custom Diffie-Hellman parameters (if the parameters did change or if the certificate need to be generated)
+* retrieve current Signed Certificate Timestamps (SCTs) from configured certificate transparency logs
+* retrieve OCSP staples
+* install all updated files
+* update symlinks
+* delete old archives
 
-When certificates are issued or re-issued,
-local DNS updates will be attempted (to update TLSA records) and associated services will be reloaded.
+Once all certificates are updated:
+* reload services associated to the certificates
+* perform configured certificate installation verification (if --verify is passed)
 
-When using remote DNS updates,
-all configured TLSA records will be verified and updated as needed on each run.
+check
+-----
+For each certificate:
+* verify if installed files permissions match the settings, and fix them if not.
 
-Configured certificate transparency logs will be queried and SCT files will be updated as necessary.
+revoke
+------
+* revoke the certificates passed as parameter.
 
-All certificates and private keys will normally be processed on each run,
-to restrict processing to specific private keys (and their certificates),
-you can list the names of the private keys to process on the command line.
+auth
+----
+For each certificate:
+* perform all needed domain authorizations
+
+This action can be used if you need to process the authorizations on a different server than the one that need the certificates.
+Then, on the other server, run the ``certmgr update --no-auth`` to generate the required files.
+
+verify
+------
+For each certificate:
+* perform configured certificate installation verification
+
+cleanup
+-------
+For each certificate:
+* delete old archives
 
 
 Daily Run Via cron
@@ -986,11 +907,11 @@ To prevent multiple instances running at the same time,
 a random wait can be introduced via the ``--randomwait`` command line option.
 The minimum and maximum wait times can be controlled via the ``min_run_delay`` and ``max_run_delay`` settings.
 
-Example cron entry, in file /etc/cron.d/acmebot::
+Example cron entry, in file /etc/cron.d/certmgr::
 
     MAILTO=admin@example.com
 
-    20 0 * * * root /usr/local/bin/acmebot --randomwait update
+    20 0 * * * root /usr/local/bin/certmgr --randomwait update
 
 This will run the tool as root every day at 20 minutes past midnight plus a random delay of five minutes to an hour.
 Any output will be mailed to admin@example.com.
@@ -999,18 +920,18 @@ If using OCSP response files, it may be desirable to refresh OCSP responses at a
 (Currently Let's Encrypt updates OCSP responses every three days.)
 To refresh OCSP responses every six hours, add the line:
 
-    20 6,12,18 * * * root /usr/local/bin/acmebot --randomwait update --ocsp
+    20 6,12,18 * * * root /usr/local/bin/certmgr --randomwait update --ocsp
 
 
 Output Options
 --------------
 
-Normally the tool will only generate output to stdout when certificates are issued or private keys need to be rolled over.
-More detailed output can be obtained by using any of the ``--verbose``, ``--debug``, or ``--detail`` options on the command line.
+Normally the tool will only generate output to stdout when certificates are issued or other file updated.
+More detailed output can be obtained by using any of the ``--verbose`` and ``--debug`` options on the command line.
 
 Normal output may be supressed by using the ``--quiet`` option.
 
-Error and warning output will be sent to stderr and cannot be supressed.
+Error output will be sent to stderr and cannot be supressed.
 
 The output can be colorized by type by adding the ``--color`` option,
 or colorized output can be suppressed via the ``--no-color`` option.
@@ -1023,7 +944,7 @@ Forced Certificate Renewal
 Normally certificates will be automatically renewed when the tool is run within the certificate renewal window,
 e.g. within ``renewal_days`` of the certificate's expiration date.
 To cause certificates to be renewed before this time,
-run the tool with the ``--force`` option on the command line.
+run the tool ``update`` with the ``--force`` option on the command line.
 
 
 Revoking Certificates
@@ -1031,29 +952,24 @@ Revoking Certificates
 
 Should it become necessary to revoke a certificate,
 for example if it is believed that the private key has been compromised,
-run the tool with the ``revoke`` option on the command line.
+run the tool with the ``revoke`` action on the command line.
 
 When revoking certificates, as a safety measure,
-it is necessary to also specify the name of the private key (or keys) that should be revoked.
-All certificates using that private key will be revoked,
-the certificate files and the primary private key file will be moved to the archive,
-and remote DNS TLSA records will be removed.
-
-The next time the tool is run after a revocation,
-any revoked certificates that are still configured will automatically perform a private key rollover.
+it is necessary to also specify the common name of certificate that should be revoked.
+The certificate files and the primary private key file will be moved to the archive.
 
 
 Authorization Only
 ------------------
 
-Use of the ``auth`` option on the command line will limit the tool to only performing domain authorizations.
+Use of the ``auth`` action on the command line will limit the tool to only performing domain authorizations.
 
 
 Certificates Only
 -----------------
 
 Use of the ``update --certs`` option on the command line will limit the tool to only issuing and renewing certificates and keys,
-and updating related files such as Diffie-Hellman paramaters and HPKP headers.
+and updating related files such as Diffie-Hellman paramaters.
 
 
 
@@ -1094,9 +1010,9 @@ Runtime passphrases may be provided on the command line, via an environment vari
 
 A command line passphrase is passed via the ``--pass`` option, e.g.::
 
-    acmebot --pass "passphrase"
+    certmgr --pass "passphrase"
 
-To use an environment variable, set the passphrase in ``ACMEBOT_PASSPHRASE``.
+To use an environment variable, set the passphrase in ``<COMMON_NAME>_PASSPHRASE`` or ``ACME_CLIENT_PASSPHRASE`` for the client key.
 
 A passphrase passed at the command line or an environment variable will be used for every private key that has it's ``key_passphrase`` set to ``true``.
 If different passphrases are desired for different keys,
@@ -1109,7 +1025,7 @@ Different passphrases may be provided for each private key (the same passphrase 
 
 Finally, the passphrases may be stored in a file, one per line, and input redirected from that file, e.g.::
 
-    acmebot < passphrase_file.txt
+    certmgr < passphrase_file.txt
 
 Passphrases passed via an input file will be used in the order that the private keys are defined in the configuration file.
 If both certificates and private key sections are defined, the private keys will be processed first, then the certificates.
@@ -1131,37 +1047,21 @@ To create a master/follower setup,
 first install and configure the tool on the master server as normal.
 The master server may also issue certificates, but it is not necessary.
 
-Configure any required domain authorizations (see the `Authorizations <#authorizations>`_ section) on the master and run the tool.
-
 Then install the tool on the follower server.
-It is not necessary to configure HTTP challenges or remote DNS update keys on the follower.
+It is not necessary to configure HTTP challenges on the follower.
 
 Before running the tool on the follower server,
 copy the client key and registration files from the master server.
-These files are normally found in ``/var/local/acmebot`` but an alternate location can be configured in the ``resource`` directory setting.
+These files are normally found in ``/etc/certmgr/account`` but an alternate location can be configured using the ``data_dir`` setting.
 
 If the master server also issues certificates for the same domain names or parent domain names as the follower,
 you may want to copy the primary and backup private keys for those certificates to the follower.
-This will cause the follower certificates to use the same keys allowing HPKP headers to safey include subdomains.
 
-Set the follower ``follower_mode`` setting to ``true`` and configure desired certificates on the follower.
-
-Run the tool on the follower server.
+Run the tool on the follower server passing ``--no-auth`` parameter.
 
 When setting up cron jobs for the master and follower,
 be sure the follower runs several minutes after the master so that all authorizations will be complete.
-The master can theoretically take (``max_dns_lookup_attempts`` x ``dns_lookup_delay``) + (``max_authorization_attempts`` x ``authorization_delay``) seconds to obtain domain authorizations (15 minutes at the default settings).
+The master can theoretically take (``max_authorization_attempts`` x ``authorization_delay``) seconds to obtain domain authorizations.
 
 It is possible to run several follower servers for each master,
 the follower cron jobs should not all run at the same time.
-
-The follower server may maintain TLSA records if remote DNS updates are configured on the follower,
-otherwise it is recommended to use spki selectors for TLSA records so that certificate renewals on the follower will not invalidate TLSA records.
-
-If private keys are shared between a master and follower,
-be sure to turn off ``auto_rollover`` and only perform private key rollovers on the master.
-It is also useful to specify the ``previous_key`` directory to preserve previous key pins during the key rollover process.
-After a private key rollover, copy the new primary and backup private key files to the followers.
-The follower will automatically detect the new private key and re-issue certificates on the next run.
-Once all the followers have updated their certificates to the new keys,
-you can safely delete the previous private key file.

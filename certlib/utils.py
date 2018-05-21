@@ -1,12 +1,10 @@
 import abc
 import contextlib
-import datetime
 import getpass
 import io
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -190,32 +188,6 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
                 op.cleanup()
             except Exception as err:
                 log.error("cleanup operation '%s' failed: %s", str(op), str(err))
-
-
-def prune_achives(archive_dir: Optional[str], days: int):
-    if not archive_dir or days <= 0:
-        return None
-
-    try:
-        filenames = os.listdir(archive_dir)
-    except FileNotFoundError:
-        return
-
-    prune_date = datetime.datetime.now() - datetime.timedelta(days=days)
-    prune_date = prune_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    log.debug("Pruning archives older than %s in '%s'", prune_date, archive_dir)
-
-    for entry in filenames:
-        try:
-            date = datetime.datetime.strptime(entry, '%Y_%m_%d_%H%M%S')
-        except ValueError:
-            continue
-        if date < prune_date:
-            try:
-                log.info("removing archive %s", entry)
-                shutil.rmtree(os.path.join(archive_dir, entry))
-            except Exception as e:
-                log.warning("error removing acrhive dir %s: %s", entry, str(e))
 
 
 # ======= Hooks Management

@@ -6,46 +6,40 @@ import logging
 import os
 import pwd
 from collections import OrderedDict
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Union
 
 import collections
 
 from . import AcmeError
-from .logging import log
+from .logging import PROGRESS, log
 from .sct import SCTLog
 from .utils import FileOwner, Hook
 
 _SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 
 
-def get_int(config: dict, key: str, default: int = 0) -> int:
+def _get_int(config: dict, key: str, default: int = 0) -> int:
     return int(config.get(key, default))
 
 
-def get_bool(config: dict, key: str, default: bool = False) -> bool:
+def _get_bool(config: dict, key: str, default: bool = False) -> bool:
     return bool(config.get(key, default))
 
 
-def get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
+def _get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
     value = config.get(key, default)
     return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (value is None) else [value]
 
 
 def _host_in_list(host_name, haystack_host_names):
     for haystack_host_name in haystack_host_names:
-        if ((host_name == haystack_host_name)
-                or (haystack_host_name.startswith('*.') and ('.' in host_name) and (host_name.split('.', 1)[1] == haystack_host_name[2:]))
-                or (host_name.startswith('*.') and ('.' in haystack_host_name) and (haystack_host_name.split('.', 1)[1] == host_name[2:]))):
+        if host_name == haystack_host_name:
+            return haystack_host_name
+        if haystack_host_name.startswith('*.') and ('.' in host_name) and (host_name.split('.', 1)[1] == haystack_host_name[2:]):
+            return haystack_host_name
+        if host_name.startswith('*.') and ('.' in haystack_host_name) and (haystack_host_name.split('.', 1)[1] == host_name[2:]):
             return haystack_host_name
     return None
-
-
-def _get_domain_names(zone_name: str, host_names):
-    domain_names = []
-    for host_name in host_names or ():
-        host_name = host_name.strip().lower()
-        domain_names.append(zone_name if ('@' == host_name) else (host_name + '.' + zone_name))
-    return domain_names
 
 
 def _check(section: str, dest: dict, values: dict):
@@ -78,9 +72,9 @@ class VerifyTarget(object):
                 if key not in ('port', 'hosts', 'starttls', 'key_types'):
                     log.warning("[verify] unknown key '%s'", key)
             self.port = spec.get('port')
-            self.hosts = get_list(spec, 'hosts')
+            self.hosts = _get_list(spec, 'hosts')
             self.starttls = spec.get('starttls')
-            self.key_types = get_list(spec, 'key_types')
+            self.key_types = _get_list(spec, 'key_types')
 
         if isinstance(self.port, str):
             try:
@@ -95,7 +89,7 @@ class PrivateKeyDef(object):
     SUPPORTED_KEYS = ('key_size', 'key_curve', 'key_passphrase')
 
     def __init__(self, spec, defaults):
-        self.size = get_int(spec, 'key_size', defaults['key_size'])
+        self.size = _get_int(spec, 'key_size', defaults['key_size'])
         self.curve = spec.get('key_curve', defaults['key_curve'])
         self.passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
 
@@ -114,63 +108,50 @@ class PrivateKeyDef(object):
 
 
 class CertificateDef(object):
-    SUPPORTED_KEYS = set(('common_name', 'alt_names', 'key_types', 'services',
+    SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
                           'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
                           'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user', 'file_group') + PrivateKeyDef.SUPPORTED_KEYS)
 
-    __slots__ = ('name', 'private_key', 'common_name', 'alt_names',
+    __slots__ = ('common_name', 'private_key', 'alt_names',
                  'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
 
-    def __init__(self, name, spec: dict, defaults, ct_logs):
+    def __init__(self, spec: dict, defaults, ct_logs):
+        self.common_name = spec['name'].strip().lower()
+
         for key in spec.keys():
             if key not in self.SUPPORTED_KEYS:
-                log.warning("[%s] unsupported key %s", name, key)
+                log.warning("[%s] unsupported key %s", self.common_name, key)
 
-        self.name = name
         self.private_key = PrivateKeyDef(spec, defaults)
-        self.common_name = spec.get('common_name', name).strip().lower()
-        alt_names = spec.get('alt_names')
-        if not alt_names:
-            alt_names = {self.common_name: ['@']}
-        elif '@' in alt_names:
-            # convert '@' zone into common_name zone
-            assert self.common_name not in alt_names
-            alt_names[self.common_name] = alt_names['@']
-            del alt_names['@']
-
-        # flatten alt_names
-        self.alt_names = []
-        for zone_name, names in alt_names.items():
-            self.alt_names.extend(_get_domain_names(zone_name, names))
-
+        self.alt_names = [self.common_name if domain == '@' else domain for domain in _get_list(spec, 'alt_names')]
         if self.common_name not in self.alt_names:
-            raise AcmeError('[config] Certificate common name "{}" not listed in alt_names in certificate "{}"', self.common_name, name)
+            self.alt_names.insert(0, self.common_name)
 
         self.key_types = spec.get('key_types', self.private_key.types)  # type: Iterable[str]
         for kt in self.key_types:
             if kt not in _SUPPORTED_KEY_TYPES:
-                raise AcmeError('[config] certificate {} requests unsupported key type "{}"', name, kt)
+                raise AcmeError('[config] certificate {} requests unsupported key type "{}"', self.common_name, kt)
             if kt not in self.private_key.types:
-                raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', name, kt)
+                raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', self.common_name, kt)
 
         self.services = spec.get('services')
 
-        self.dhparam_size = get_int(spec, 'dhparam_size', defaults['dhparam_size'])
+        self.dhparam_size = _get_int(spec, 'dhparam_size', defaults['dhparam_size'])
         self.ecparam_curve = spec.get('ecparam_curve', defaults['ecparam_curve'])
 
-        self.ocsp_must_staple = get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
-        self.ocsp_responder_urls = get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
+        self.ocsp_must_staple = _get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
+        self.ocsp_responder_urls = _get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
 
         self.ct_submit_logs = []
-        for ct_log_name in get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
+        for ct_log_name in _get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
             ct_log = ct_logs.get(ct_log_name)
             if ct_log:
                 self.ct_submit_logs.append(SCTLog(ct_log_name, base64.b64decode(ct_log['id']), ct_log['url']))
             else:
-                log.warning("certificate '%s' specify undefined ct_log '%s'", name, ct_log_name)
+                log.warning("certificate '%s' specify undefined ct_log '%s'", self.common_name, ct_log_name)
 
-        self.verify = [VerifyTarget(verify_spec) for verify_spec in get_list(spec, 'verify', defaults['verify'])]
+        self.verify = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'verify', defaults['verify'])]
 
         # Compute file owner
         try:
@@ -186,102 +167,25 @@ class CertificateDef(object):
         except Exception as e:
             raise AcmeError("Failed to determine user and group ID") from e
 
-
-class FileManager(object):
-    DEFAULT_DIRECTORIES = {
-        'lock': '/var/run',
-        'log': '/var/log/certmgr',
-        'link': None,
-        'resource': '/var/local/certmgr',
-        'private_key': '/etc/ssl/private',
-        'full_key': '/etc/ssl/private',
-        'certificate': '/etc/ssl/certs',
-        'full_certificate': '/etc/ssl/certs',
-        'chain': '/etc/ssl/certs',
-        'param': '/etc/ssl/params',
-        'http_challenge': None,
-        'ocsp': '/etc/ssl/ocsp',
-        'sct': '/etc/ssl/scts/{name}/{key_type}',
-        'archive': '/etc/ssl/archive'
-    }
-
-    DEFAULT_FILENAMES = {
-        'lock': 'certmgr.lock',
-        'log': 'certmgr.log',
-        'private_key': '{name}{suffix}.key',
-        'full_key': '{name}_full{suffix}.key',
-        'certificate': '{name}{suffix}.pem',
-        'full_certificate': '{name}+root{suffix}.pem',
-        'chain': '{name}_chain{suffix}.pem',
-        'param': '{name}_param.pem',
-        'ocsp': '{name}{suffix}.ocsp',
-        'sct': '{ct_log_name}.sct'
-    }
-
-    def __init__(self, base: str, directories, filenames, http_challenges):
-        for key, dirpath in directories.items():
-            if not dirpath:
-                continue
-            if not os.path.isabs(dirpath):
-                dirpath = os.path.join(base, dirpath)
-            directories[key] = os.path.realpath(dirpath)
-
-        self._directories = directories
-        self._filenames = filenames
-        self._challenges = http_challenges
-
-    def _filename(self, file_type: str) -> Optional[str]:
-        return self._filenames.get(file_type)
-
-    def filepath(self, file_type: str, **kwargs) -> str:
-        dirtpl = self.directory(file_type)
-        if dirtpl:
-            key_type = kwargs.get('key_type')
-            suffix = '.' + key_type.lower() if key_type else None
-            directory = dirtpl.format(suffix=suffix, **kwargs)
-            file_name = self._filename(file_type).format(suffix=suffix, **kwargs)
-            assert '/' not in file_name, file_name
-            return os.path.join(directory, file_name.replace('*', '_'))
-        return ''
-
-    def directory(self, file_type: str) -> Optional[str]:
-        return self._directories[file_type]
-
-    def archive_dir(self, name: str) -> Optional[str]:
-        archive = self.directory('archive')
-        if not archive:
-            return None
-        date = datetime.datetime.now().strftime('%Y_%m_%d_%H%M%S')
-        return os.path.join(archive, name, date)
-
-    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
-        challenge_dir = self._challenges.get(domain_name)
-        if challenge_dir:
-            return challenge_dir
-
-        http_challenge_directory = self.directory('http_challenge')
-        if http_challenge_directory and '{' in http_challenge_directory:
-            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
-        return http_challenge_directory
+    @property
+    def name(self):
+        return self.common_name
 
 
-def configure_logger(level: Optional[str], fs: FileManager):
-    # if level is None, don't create log file
+def configure_logger(log_file: str, level: Optional[str]):
     if level is None:
-        return
-    log_file = fs.filepath('log')
-    if not log_file:
-        return
+        level = "quiet"
 
     levels = {
-        "normal": logging.WARNING,
+        "quiet": logging.WARNING,
+        "normal": PROGRESS,
         "verbose": logging.INFO,
         "debug": logging.DEBUG,
     }
     if level not in levels:
         log.warning("unsupported log level: %s", level)
         level = "normal"
-    log.set_file(fs.filepath('log'), levels[level])
+    log.set_file(log_file, levels[level])
 
 
 _DEFAULT_HOOKS = {
@@ -349,7 +253,7 @@ _DEFAULT_CT_LOGS = {
 class Configuration(object):
 
     @classmethod
-    def load(cls, file_path: str, search_paths: Iterable[str] = ()) -> Tuple['Configuration', FileManager]:
+    def load(cls, file_path: str, search_paths: Iterable[str] = ()) -> 'Configuration':
         search_paths = ('',) if (os.path.isabs(file_path)) else search_paths
         for search_path in search_paths:
             config_file_path = os.path.join(search_path, file_path)
@@ -363,7 +267,7 @@ class Configuration(object):
         raise AcmeError('[config] Config file "{}" not found', file_path)
 
     @classmethod
-    def _load(cls, file_path: str) -> Tuple['Configuration', FileManager]:
+    def _load(cls, file_path: str) -> 'Configuration':
         cfg = cls(file_path)
         with open(cfg.path, 'rt', encoding='utf-8') as config_file, log.prefix("[config] "):
             data = json.load(config_file, object_pairs_hook=collections.OrderedDict)
@@ -372,36 +276,20 @@ class Configuration(object):
             values = data.get('settings')
             if values:
                 level = values.get('log_level', cfg.get('log_level'))
+                log_file = values.get('log_file', cfg.get('log_file'))
             else:
                 level = cfg.get('log_level')
+                log_file = cfg.get('log_file')
 
-            directories = dict(FileManager.DEFAULT_DIRECTORIES)
-            values = data.get('directories')
-            if values:
-                # check later when logger ready
-                _merge('directories', directories, values, check=False)
-
-            filenames = dict(FileManager.DEFAULT_FILENAMES)
-            values = data.get('file_names')
-            if values:
-                # check later when logger ready
-                _merge('file_names', filenames, values, check=False)
-
-            filemgr = FileManager(os.path.dirname(cfg.path), directories, filenames, data.get('http_challenges') or {})
-            configure_logger(level, filemgr)
+            if log_file:
+                configure_logger(os.path.join(os.path.dirname(cfg.path), log_file), level)
 
             sct_logs = dict(_DEFAULT_CT_LOGS)
             for section, values in data.items():
                 if section == 'account':
                     _merge('account', cfg.account, values)
                 elif section == 'settings':
-                    _merge('settings', cfg.settings, values)
-                elif section == 'directories':
-                    # for logging purpose only
-                    _check('directories', FileManager.DEFAULT_DIRECTORIES, values)
-                elif section == 'file_names':
-                    # for logging purpose only
-                    _check('file_names', FileManager.DEFAULT_FILENAMES, values)
+                    cfg._merge_settings(values)
                 elif section == 'hooks':
                     _check('hooks', _DEFAULT_HOOKS, values)
                     cfg._parse_hooks(values)
@@ -412,7 +300,7 @@ class Configuration(object):
                 elif section == 'certificates':
                     pass
                 elif section == 'http_challenges':
-                    pass
+                    cfg._http_challenges = values
                 else:
                     log.warning('unknown section name: "%s"', section)
 
@@ -421,15 +309,19 @@ class Configuration(object):
                 raise AcmeError('section "certificates" is required and must not be empty.')
             cfg._parse_certificates(certificates, sct_logs)
 
-        return cfg, filemgr
+        return cfg
 
     def __init__(self, path: str):
         self.path = os.path.realpath(path)
         self.hooks = dict(_DEFAULT_HOOKS)  # type: Dict[str, Optional[List[Hook]]]
         self.account = {'email': None, 'passphrase': None}
         self.settings = {
-            'log_level': 'info',
+            'data_dir': '/etc/certmgr',
+            'http_challenge_dir': None,
+
             'color_output': True,
+            'log_level': 'info',
+            'log_file': '/var/log/certmgr/certmgr.log',
 
             'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
             'renewal_days': 30,
@@ -453,7 +345,9 @@ class Configuration(object):
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
-            'verify': None
+            'verify': None,
+
+            'lock_file': '/var/run/certmgr.lock',
         }
 
         self.services = {
@@ -472,37 +366,64 @@ class Configuration(object):
         }
 
         self.certificates = OrderedDict()  # type: Dict[str, CertificateDef]
+        self._http_challenges = {}
 
     def get(self, item: str, default=None):
         return self.settings.get(item, default)
 
     def int(self, key: str, default=0):
-        return get_int(self.settings, key, default)
+        return _get_int(self.settings, key, default)
 
     def bool(self, key: str, default=False):
-        return get_bool(self.settings, key, default)
+        return _get_bool(self.settings, key, default)
 
     def list(self, key: str, default=()):
-        return get_list(self.settings, key, default)
+        return _get_list(self.settings, key, default)
 
     def service(self, service_name: str) -> Optional[str]:
         return self.services[service_name]
 
+    @property
+    def data_dir(self) -> str:
+        return self.settings['data_dir']
+
+    @property
+    def account_dir(self) -> str:
+        return os.path.join(self.data_dir, 'account')
+
+    def archive_dir(self, name: str) -> Optional[str]:
+        if self.int('archive_days') <= 0:
+            return None
+
+        archive = os.path.join(self.data_dir, 'archives')
+        date = datetime.datetime.now().strftime('%Y_%m_%d_%H%M%S')
+        return os.path.join(archive, name, date)
+
+    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
+        challenge_dir = self._http_challenges.get(domain_name)
+        if challenge_dir:
+            return challenge_dir
+
+        http_challenge_directory = self.get('http_challenge_dir')
+        if http_challenge_directory and '{' in http_challenge_directory:
+            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
+        return http_challenge_directory
+
     def _parse_certificates(self, certificates: dict, sct_logs: dict):
         host_names = set()
-        for certificate_name, certificate_spec in certificates.items():
-            cert = CertificateDef(certificate_name, certificate_spec, self.settings, sct_logs)
+        for certificate_spec in certificates:
+            cert = CertificateDef(certificate_spec, self.settings, sct_logs)
             for host_name in cert.alt_names:
                 if host_name in host_names:
-                    log.info("{} host name defined in two certificates ({} and an other one)", host_name, certificate_name)
+                    log.info("{} host name defined in two certificates ({} and an other one)", host_name, cert.common_name)
                 host_names.add(host_name)
 
             for v in cert.verify:
                 for host_name in v.hosts:
                     if not _host_in_list(host_name, cert.alt_names):
-                        raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, certificate_name)
+                        raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, cert.common_name)
 
-            self.certificates[certificate_name] = cert
+            self.certificates[cert.common_name] = cert
 
     def _parse_hooks(self, values: dict):
         for name, spec in values.items():
@@ -514,3 +435,11 @@ class Configuration(object):
                 hooks = [Hook(name, spec)]
 
             self.hooks[name] = hooks
+
+    def _merge_settings(self, values):
+        _merge('settings', self.settings, values)
+        basedir = os.path.dirname(self.path)
+        for file in ('log_file', 'lock_file', 'data_dir', 'http_challenge_dir'):
+            value = self.get(file)
+            if value and not os.path.isabs(value):
+                self.settings[file] = os.path.join(basedir, value)

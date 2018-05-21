@@ -4,6 +4,9 @@ import sys
 import traceback
 from typing import Optional
 
+PROGRESS = 25
+logging.addLevelName(PROGRESS, "PROGRESS")
+
 
 class _Formatter(logging.Formatter):
     def __init__(self):
@@ -140,6 +143,9 @@ class _Logger(logging.LoggerAdapter):
         super().info(msg, *args, **kwargs)
         if print_exc and self.isEnabledFor(logging.DEBUG):
             traceback.print_exc()
+
+    def progress(self, msg, *args, **kwargs):
+        self.log(25, msg, *args, **kwargs)
 
     def warning(self, msg, *args, print_exc: bool = False, **kwargs):
         """

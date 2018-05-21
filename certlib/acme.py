@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import urllib
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 from urllib import parse
 
 import collections
@@ -13,8 +13,7 @@ import josepy
 import pkg_resources
 from acme import client, messages
 
-from . import AcmeError
-from .config import FileManager
+from . import AcmeError, VERSION
 from .crypto import PrivateKey
 from .logging import log
 from .utils import (ArchiveAndWriteOperation, ArchiveOperation, Hooks,
@@ -23,7 +22,7 @@ from .utils import (ArchiveAndWriteOperation, ArchiveOperation, Hooks,
 
 def _user_agent():
     acmelib = pkg_resources.get_distribution('acme')
-    return 'certmgr/1.0.0 acme-python/{acme_version}'.format(acme_version=acmelib.version if acmelib else "0.0.0")
+    return 'certmgr/{version} acme-python/{acme_version}'.format(version=VERSION, acme_version=acmelib.version if acmelib else "0.0.0")
 
 
 class _PasswordProvider(object):
@@ -37,9 +36,9 @@ class _PasswordProvider(object):
         return self.key_cipher.passphrase if self.key_cipher else None
 
 
-def connect_client(resource_dir: str, account: str, directory_url: str, passphrase, archive_dir: Optional[str]) -> client.ClientV2:
+def connect_client(account_dir: str, account: str, directory_url: str, passphrase, archive_dir: Optional[str]) -> client.ClientV2:
     registration = None
-    registration_path = os.path.join(resource_dir, 'registration.json')
+    registration_path = os.path.join(account_dir, 'registration.json')
     with contextlib.suppress(FileNotFoundError), open(registration_path) as f:
         registration = messages.RegistrationResource.json_loads(f.read())
         log.debug('Loaded registration %s', registration_path)
@@ -54,7 +53,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
     client_key = None
     client_key_cipher = None
     client_key_upgrade = False
-    client_key_path = os.path.join(resource_dir, 'client.key')
+    client_key_path = os.path.join(account_dir, 'client.key')
     # ACME-ISSUE: Resetting the client key should not be necessary, but the new registration comes back empty if we use the old key
     if registration:
         pwd = _PasswordProvider(passphrase)
@@ -63,7 +62,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
         if not client_key:
             # File does not exist, try to load old client file
             try:
-                client_old_key_path = os.path.join(resource_dir, 'client_key.json')
+                client_old_key_path = os.path.join(account_dir, 'client_key.json')
                 with open(client_old_key_path) as f:
                     # pylint: disable=protected-access
                     client_key = PrivateKey.from_key(josepy.JWKRSA.fields_from_json(json.load(f)).key._wrapped, False)
@@ -71,7 +70,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
                 log.debug('Loaded old format client key %s', client_old_key_path)
                 ops.append(ArchiveOperation('resource', client_old_key_path))
             except FileNotFoundError:
-                log.info('Client key not present, generating')
+                log.debug('client key file not found')
                 registration = None
         else:
             log.debug('Loaded client key %s', client_key_path)
@@ -79,17 +78,18 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
     op = None
     if client_key_upgrade or not client_key:
         if not client_key:
+            log.progress('Generating client key')
             client_key = PrivateKey.create('rsa', 4096)
         if passphrase and not client_key_cipher:
             client_key_cipher = get_key_cipher('acme_client', passphrase, False)
         op = ArchiveAndWriteOperation('resource', client_key_path, mode=0o600)
     elif client_key.encrypted and not passphrase:
-        log.debug("client key is encrypted but config require clear text.")
+        log.info("client key is encrypted but config require clear text.")
         op = ArchiveAndWriteOperation('resource', client_key_path, mode=0o600)
         client_key_cipher = None
     elif not client_key.encrypted and passphrase:
         client_key_cipher = get_key_cipher('acme_client', passphrase, False)
-        log.debug("client key is clear text but config require encrypted.")
+        log.info("client key is clear text but config require encrypted.")
         op = WriteOperation(client_key_path, mode=0o600)
 
     if op:
@@ -106,7 +106,7 @@ def connect_client(resource_dir: str, account: str, directory_url: str, passphra
         raise AcmeError("Can't connect to ACME service") from error
 
     if not registration:
-        log.info('Registering client')
+        log.progress('Registering client')
         try:
             reg = messages.NewRegistration.from_data(email=account)
             if "terms_of_service" in acme_client.directory.meta:
@@ -144,7 +144,7 @@ def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: s
     return None
 
 
-def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_client: client.ClientV2,
+def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Union[str, Callable[[str], str]], acme_client: client.ClientV2,
                           retry: int, delay: int, hooks: Hooks) -> List[messages.AuthorizationResource]:
     authorizations = []
     authorization_resources = {}
@@ -156,7 +156,7 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
             log.debug('Domain "%s" already authorized', domain_name)
             authorizations.append(authorization_resource)
         elif messages.STATUS_PENDING == authorization_resource.body.status:
-            log.info('Requesting authorization for domain "%s"', domain_name)
+            log.progress('Requesting authorization for domain "%s"', domain_name)
             authorization_resources[domain_name] = authorization_resource
         else:
             raise AcmeError('Unexpected status "{}" for authorization of {}', authorization_resource.body.status, domain_name)
@@ -169,7 +169,7 @@ def handle_authorizations(order: messages.OrderResource, fs: FileManager, acme_c
     challenge_http_responses = {}
     for domain_name, authorization_resource in authorization_resources.items():
         identifier = authorization_resource.body.identifier.value
-        http_challenge_directory = fs.http_challenge_directory(identifier)
+        http_challenge_directory = http_challenge_dir(identifier) if callable(http_challenge_dir) else http_challenge_dir  # type: str
         if not http_challenge_directory:
             raise AcmeError("no http_challenge_directory directory specified for domain {}", domain_name)
         challenge = _get_challenge(authorization_resource, 'http-01')
@@ -216,9 +216,9 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
                         retry: int, delay: int) -> List[messages.AuthorizationResource]:
     # answer challenges
     for domain_name, authorization_resource in authorization_resources.items():
-        log.debug('Answering challenge for %s', domain_name)
         challenge = _get_challenge(authorization_resource, 'http-01')
         try:
+            log.debug('Answering challenge for %s', domain_name)
             acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
         except Exception as error:
             raise AcmeError('Error answering challenge for {}', domain_name) from error
@@ -248,7 +248,7 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
         attempts[authorization_resource] += 1
         if messages.STATUS_VALID == authorization_resource.body.status:
             authorizations.append(authorization_resource)
-            log.info('Domain "%s" authorized', domain_name)
+            log.progress('Domain "%s" authorized', domain_name)
             continue
         elif messages.STATUS_INVALID == authorization_resource.body.status:
             error = _get_challenge(authorization_resource, 'http-01').error
