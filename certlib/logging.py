@@ -2,7 +2,7 @@ import contextlib
 import logging
 import sys
 import traceback
-from typing import Optional, NoReturn
+from typing import Optional
 
 from certlib import AcmeError
 
@@ -65,7 +65,8 @@ class ColorFormatter(_Formatter):
             color = 'light gray'
 
         msg = super().format(record)
-        return '\033[{style};{color}m{message}\033[0m'.format(color=self._color_codes[color], style=self._style_codes[style], message=msg)
+        return '\033[{style};{color}m{message}\033[0m'.format(color=self._color_codes[color],
+                                                              style=self._style_codes[style], message=msg)
 
 
 class _Logger(logging.LoggerAdapter):
@@ -177,7 +178,7 @@ class _Logger(logging.LoggerAdapter):
         if print_exc and self.isEnabledFor(logging.DEBUG):
             traceback.print_exc()
 
-    def raise_error(self, msg, *args, cause=None, **kwargs) -> NoReturn:
+    def raise_error(self, msg, *args, cause=None, **kwargs):  # python 3.6 -> NoReturn:
         self.critical(msg, *args, **kwargs)
         if args:
             msg = msg % args

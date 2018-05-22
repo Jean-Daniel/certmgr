@@ -1,6 +1,5 @@
 import argparse
 import contextlib
-import datetime
 import fcntl
 import logging
 import os
