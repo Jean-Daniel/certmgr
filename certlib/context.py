@@ -6,7 +6,6 @@ import struct
 from typing import List, Optional, Tuple
 
 from certlib.utils import get_key_cipher
-from . import AcmeError
 from .config import CertificateDef
 from .crypto import Certificate, PrivateKey, check_dhparam, check_ecparam, load_full_chain_file, save_chain
 from .logging import log

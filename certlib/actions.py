@@ -134,7 +134,7 @@ class CheckAction(Action):
                 self._check_file(item.ocsp_path(), 0o644, owner)
 
                 for ct_log in context.config.ct_submit_logs:
-                    self._check_file(item.sct(ct_log), 0o644, owner)
+                    self._check_file(item.sct_path(ct_log), 0o644, owner)
 
         # check symlinks
         update_links(self.config.data_dir, context)
