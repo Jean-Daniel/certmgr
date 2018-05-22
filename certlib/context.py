@@ -82,7 +82,7 @@ class CertificateItem(object):
         try:
             return PrivateKey.load(key_file_path, lambda: self.context.key_cipher(force_prompt=True).passphrase)
         except Exception as e:
-            raise AcmeError("private key '{}' loading failed", key_file_path) from e
+            log.raise_error("private key '%s' loading failed", key_file_path, cause=e)
 
     @property
     def certificate(self) -> Certificate:
@@ -140,7 +140,7 @@ class CertificateItem(object):
             if self._chain is _UNINITIALIZED:
                 self._chain = chain
         except Exception as e:
-            raise AcmeError("certificate '{}' loading failed", cert_path) from e
+            log.raise_error("certificate '%s' loading failed", cert_path, cause=e)
 
     def should_renew(self, renewal_days: int):
         if not self.key or not self.certificate:

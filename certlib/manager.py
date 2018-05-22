@@ -155,7 +155,6 @@ class AcmeManager(object):
         action.finalize()
 
     def run(self):
-        log.info('\n----- %s executed at %s', 'certmgr', str(datetime.datetime.now()))
         lock_path = self.config.get('lock_file')
         if self.args.random_wait:
             delay_seconds = min(random.randrange(min(self.config.int('min_run_delay'), self.config.int('max_run_delay')),

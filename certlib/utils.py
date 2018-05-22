@@ -13,7 +13,6 @@ from typing import Iterable, Optional
 
 import collections
 
-from . import AcmeError
 from .logging import log
 
 # ========= File System
@@ -181,7 +180,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
                     op.revert()
                 except Exception as err:
                     log.error("reverting operation '%s' failed: %s", str(op), str(err))
-        raise AcmeError("transaction failed") from e
+        log.raise_error("transaction failed", cause=e)
     else:
         for op in applied:
             try:
@@ -204,10 +203,10 @@ class Hook(object):
             self.cwd = spec.get('cwd')
             # TODO: add support for env, …
         else:
-            raise AcmeError("[config:hooks:{}] hook must be either a command line string, or a dictionary".format(name))
+            log.raise_error("[hook:%s] hook must be either a command line string, or a dictionary", name)
 
         if not self.args:
-            raise AcmeError("[config:hooks:{}] arguments must not be empty".format(name))
+            log.raise_error("[hook:%s] arguments must not be empty", name)
 
     def execute(self, **kwargs):
         args = None

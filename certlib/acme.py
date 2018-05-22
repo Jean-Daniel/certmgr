@@ -13,7 +13,7 @@ import josepy
 import pkg_resources
 from acme import client, messages
 
-from . import AcmeError, VERSION
+from . import VERSION
 from .crypto import PrivateKey
 from .logging import log
 from .utils import (ArchiveAndWriteOperation, ArchiveOperation, Hooks,
@@ -102,8 +102,8 @@ def connect_client(account_dir: str, account: str, directory_url: str, passphras
         log.debug("Fetching meta from acme server '%s'", directory_url)
         directory = messages.Directory.from_json(net.get(directory_url).json())
         acme_client = client.ClientV2(directory, net)
-    except Exception as error:
-        raise AcmeError("Can't connect to ACME service") from error
+    except Exception as e:
+        log.raise_error("Can't connect to ACME service", cause=e)
 
     if not registration:
         log.progress('Registering client')
@@ -128,8 +128,8 @@ def connect_client(account_dir: str, account: str, directory_url: str, passphras
             with op.file(binary=False) as f:
                 f.write(registration.json_dumps())
             ops.append(op)
-        except Exception as error:
-            raise AcmeError("Can't register with ACME service") from error
+        except Exception as e:
+            log.raise_error("Can't register with ACME service", cause=e)
 
     if ops:
         commit_file_transactions(ops, archive_dir)
@@ -159,7 +159,7 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
             log.progress('Requesting authorization for domain "%s"', domain_name)
             authorization_resources[domain_name] = authorization_resource
         else:
-            raise AcmeError('Unexpected status "{}" for authorization of {}', authorization_resource.body.status, domain_name)
+            log.raise_error('Unexpected status "%s" for authorization of %s', authorization_resource.body.status, domain_name)
 
     # All auth where already valid, nothing to do
     if not authorization_resources:
@@ -171,10 +171,10 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
         identifier = authorization_resource.body.identifier.value
         http_challenge_directory = http_challenge_dir(identifier) if callable(http_challenge_dir) else http_challenge_dir  # type: str
         if not http_challenge_directory:
-            raise AcmeError("no http_challenge_directory directory specified for domain {}", domain_name)
+            log.raise_error("[%s] no http_challenge_directory directory specified", domain_name)
         challenge = _get_challenge(authorization_resource, 'http-01')
         if not challenge:
-            raise AcmeError('Unable to use http-01 challenge for {}', domain_name)
+            log.raise_error('[%s] Unable to use http-01 challenge', domain_name)
         challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
         log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
         try:
@@ -185,11 +185,11 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
 
             challenge_http_responses[domain_name] = challenge_file_path
             hooks.add('set_http_challenge', domain=domain_name, file=challenge_file_path)
-        except Exception as error:
+        except Exception as e:
             # remove already saved challenges
             for challenge_file in challenge_http_responses.values():
                 os.remove(challenge_file)
-            raise AcmeError('Unable to create acme-challenge file "{}"', challenge_file_path) from error
+            log.raise_error('[%s] Unable to create acme-challenge file "{}"', domain_name, challenge_file_path, cause=e)
     try:
         hooks.call()
         # Process authorizations
@@ -220,8 +220,8 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
         try:
             log.debug('Answering challenge for %s', domain_name)
             acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
-        except Exception as error:
-            raise AcmeError('Error answering challenge for {}', domain_name) from error
+        except Exception as e:
+            log.raise_error('[%s] Error answering challenge', domain_name, cause=e)
 
     # poll for authorizations
     authorizations = []
@@ -242,8 +242,8 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
                 log.warning('%s while waiting for domain challenge for %s', response, domain_name)
                 waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
                 continue
-        except Exception as error:
-            raise AcmeError('Error polling for authorization for {}', domain_name) from error
+        except Exception as e:
+            log.raise_error('[%s] Error polling for authorization', domain_name, cause=e)
 
         attempts[authorization_resource] += 1
         if messages.STATUS_VALID == authorization_resource.body.status:
@@ -251,16 +251,15 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
             log.progress('Domain "%s" authorized', domain_name)
             continue
         elif messages.STATUS_INVALID == authorization_resource.body.status:
-            error = _get_challenge(authorization_resource, 'http-01').error
-            raise AcmeError('Authorization failed for domain {}: {}', domain_name, error.detail if error else 'Unknown error')
+            e = _get_challenge(authorization_resource, 'http-01').error
+            log.raise_error('[%s] Authorization failed for domain %s: %s', domain_name, e.detail if e else 'Unknown error')
         elif messages.STATUS_PENDING == authorization_resource.body.status:
             if attempts[authorization_resource] > retry:
                 log.debug('Max retry reached for domain %s', domain_name)
-                raise AcmeError('Authorization timed out for {}', domain_name)
+                log.raise_error('[%s] Authorization timed out', domain_name)
             else:
                 log.debug('Retrying')
                 waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
         else:
-            raise AcmeError('Unexpected authorization status "{}"', authorization_resource.body.status)
-
+            log.raise_error('[%s] Unexpected authorization status "%s"', domain_name, authorization_resource.body.status)
     return authorizations

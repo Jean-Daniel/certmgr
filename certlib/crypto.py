@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat
 
-from . import AcmeError
+from .logging import log
 
 # FIXME: should be dynamic ?
 _SUPPORTED_CURVES = {
@@ -278,7 +278,7 @@ def _load_full_chain(full_chain: List[Certificate]) -> Tuple[Optional[Certificat
     if not full_chain:
         return None, None
     if len(full_chain) < 2:
-        raise AcmeError("full chain must contains at least 2 certificates")
+        log.raise_error("full chain must contains at least 2 certificates")
     return full_chain[0], full_chain[1:]
 
 
@@ -328,7 +328,7 @@ def get_dhparam_size(dhparam_pem: bytes) -> int:
     match = re.match(r'\s*(?:PKCS#3)?\s*DH Parameters: \(([0-9]+) bit\)\n', output.decode('ascii'))
     if match:
         return int(match.group(1))
-    raise AcmeError("dhparam size extraction failed: {}", output.decode('ascii'))
+    log.raise_error("dhparam size extraction failed: %s", output.decode('ascii'))
 
 
 def get_ecparam_curve(ecparam_pem: bytes) -> str:
@@ -337,7 +337,7 @@ def get_ecparam_curve(ecparam_pem: bytes) -> str:
     match = re.match(r'ASN1 OID: ([^\s]+)\n', output.decode('ascii'))
     if match:
         return match.group(1)
-    raise AcmeError("ecparam size extraction failed: {}", output.decode('ascii'))
+    log.raise_error("ecparam size extraction failed: %s", output.decode('ascii'))
 
 
 def fetch_dhparams(dhparam_size: int, dhparam_idx: int) -> Optional[str]:

@@ -86,7 +86,7 @@ class UpdateAction(Action):
                             status = authorization_resource.body.status
                             domain_name = authorization_resource.body.identifier.value
                             if messages.STATUS_VALID != status:
-                                raise AcmeError('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
+                                log.raise_error('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
                     else:
                         handle_authorizations(order, self.config.http_challenge_directory, self.acme_client,
                                               self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'), Hooks(self.config.hooks))
@@ -95,10 +95,10 @@ class UpdateAction(Action):
                         order = self.acme_client.finalize_order(order, datetime.datetime.now() + datetime.timedelta(seconds=self.config.int('cert_poll_time')))
                         certificate, chain = load_full_chain(order.fullchain_pem.encode('ascii'))
                         if not certificate or not chain:
-                            raise AcmeError("Certificate generation failed. Missing certificate or chain in response.")
+                            log.raise_error("Certificate generation failed. Missing certificate or chain in response.")
                         item.update(key, certificate, chain)
                     except Exception as e:
-                        raise AcmeError('[{}:{}] Certificate issuance failed', item.name, item.type.upper()) from e
+                        log.raise_error('Certificate issuance failed', item.name, item.type.upper(), cause=e)
 
                     log.progress('New certificate issued')
 

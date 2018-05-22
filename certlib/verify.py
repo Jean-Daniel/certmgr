@@ -24,7 +24,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
         if b'STARTTLS' not in buffer:
             sock.shutdown(socket.SHUT_RDWR)
             sock.close()
-            raise AcmeError('STARTTLS not supported on server')
+            log.raise_error('STARTTLS not supported on server')
         sock.send(b'starttls\r\n')
         log.debug('SMTP: %s', sock.recv(4096))
     elif 'pop3' == ty:
@@ -51,13 +51,13 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
         if b'"STARTTLS"' not in buffer:
             sock.shutdown(socket.SHUT_RDWR)
             sock.close()
-            raise AcmeError('STARTTLS not supported on server')
+            log.raise_error('STARTTLS not supported on server')
         sock.send(b'StartTls\r\n')
         log.debug('SIEVE: %s', sock.recv(4096))
     else:
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
-        raise Exception('Unsuppoprted STARTTLS type: ' + ty)
+        log.raise_error('Unsuppoprted STARTTLS type: ' + ty)
     sock.settimeout(None)
 
 

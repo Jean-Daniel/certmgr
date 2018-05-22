@@ -17,6 +17,8 @@ from .utils import FileOwner, Hook
 
 _SUPPORTED_KEY_TYPES = ('rsa', 'ecdsa')
 
+_SUPPORTED_CURVES = ('secp256r1', 'secp384r1', 'secp521r1')
+
 
 def _get_int(config: dict, key: str, default: int = 0) -> int:
     return int(config.get(key, default))
@@ -28,16 +30,19 @@ def _get_bool(config: dict, key: str, default: bool = False) -> bool:
 
 def _get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
     value = config.get(key, default)
-    return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (value is None) else [value]
+    return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (
+                value is None) else [value]
 
 
 def _host_in_list(host_name, haystack_host_names):
     for haystack_host_name in haystack_host_names:
         if host_name == haystack_host_name:
             return haystack_host_name
-        if haystack_host_name.startswith('*.') and ('.' in host_name) and (host_name.split('.', 1)[1] == haystack_host_name[2:]):
+        if haystack_host_name.startswith('*.') and ('.' in host_name) and (
+                host_name.split('.', 1)[1] == haystack_host_name[2:]):
             return haystack_host_name
-        if host_name.startswith('*.') and ('.' in haystack_host_name) and (haystack_host_name.split('.', 1)[1] == host_name[2:]):
+        if host_name.startswith('*.') and ('.' in haystack_host_name) and (
+                haystack_host_name.split('.', 1)[1] == host_name[2:]):
             return haystack_host_name
     return None
 
@@ -66,7 +71,7 @@ class VerifyTarget(object):
         else:
             assert isinstance(spec, dict), "dict expected but got " + str(spec.__class__)
             if 'port' not in spec:
-                raise AcmeError('[config:verify] missing port definition')
+                log.raise_error('missing port definition')
 
             for key in spec.keys():
                 if key not in ('port', 'hosts', 'starttls', 'key_types'):
@@ -80,7 +85,7 @@ class VerifyTarget(object):
             try:
                 self.port = int(self.port)
             except ValueError:
-                raise AcmeError('[config] Invalid port definition "{}"', self.port)
+                log.raise_error('Invalid port definition "%s"', self.port)
 
 
 class PrivateKeyDef(object):
@@ -90,27 +95,33 @@ class PrivateKeyDef(object):
 
     def __init__(self, spec, defaults):
         self.size = _get_int(spec, 'key_size', defaults['key_size'])
-        self.curve = spec.get('key_curve', defaults['key_curve'])
-        self.passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
+        if self.size < 0:
+            log.raise_error("key_size must be an integer >= 0: %s", self.size)
 
-        self.types = set()
+        self.curve = spec.get('key_curve', defaults['key_curve'])
+        if self.curve and self.curve not in _SUPPORTED_CURVES:
+            log.raise_error("key_curve must be null or one of %s: %s", _SUPPORTED_CURVES, self.curve)
+
+        self.passphrase = spec.get('key_passphrase', defaults['key_passphrase'])
+        self.types = []
         if self.size:
-            self.types.add('rsa')
+            self.types.append('rsa')
         if self.curve:
-            self.types.add('ecdsa')
+            self.types.append('ecdsa')
 
     def params(self, key_type: str) -> Union[str, int]:
         if 'rsa' == key_type:
             return self.size
         if 'ecdsa' == key_type:
             return self.curve
-        raise AcmeError('Unsupported key type {}', key_type)
+        log.raise_error('Unsupported key type %s', key_type)
 
 
 class CertificateDef(object):
     SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
                           'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
-                          'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user', 'file_group') + PrivateKeyDef.SUPPORTED_KEYS)
+                          'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user',
+                          'file_group') + PrivateKeyDef.SUPPORTED_KEYS)
 
     __slots__ = ('common_name', 'private_key', 'alt_names',
                  'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
@@ -119,53 +130,54 @@ class CertificateDef(object):
     def __init__(self, spec: dict, defaults, ct_logs):
         self.common_name = spec['name'].strip().lower()
 
-        for key in spec.keys():
-            if key not in self.SUPPORTED_KEYS:
-                log.warning("[%s] unsupported key %s", self.common_name, key)
+        with log.prefix("[{}] ".format(self.common_name)):
+            for key in spec.keys():
+                if key not in self.SUPPORTED_KEYS:
+                    log.warning("unknown parameter %s", key)
 
-        self.private_key = PrivateKeyDef(spec, defaults)
-        self.alt_names = [self.common_name if domain == '@' else domain for domain in _get_list(spec, 'alt_names')]
-        if self.common_name not in self.alt_names:
-            self.alt_names.insert(0, self.common_name)
+            self.private_key = PrivateKeyDef(spec, defaults)
+            self.alt_names = [self.common_name if domain == '@' else domain for domain in _get_list(spec, 'alt_names')]
+            if self.common_name not in self.alt_names:
+                self.alt_names.insert(0, self.common_name)
 
-        self.key_types = spec.get('key_types', self.private_key.types)  # type: Iterable[str]
-        for kt in self.key_types:
-            if kt not in _SUPPORTED_KEY_TYPES:
-                raise AcmeError('[config] certificate {} requests unsupported key type "{}"', self.common_name, kt)
-            if kt not in self.private_key.types:
-                raise AcmeError('[config] certificate {} requests key type "{}" but does not provide required params', self.common_name, kt)
+            self.key_types = spec.get('key_types', self.private_key.types)  # type: Iterable[str]
+            for kt in self.key_types:
+                if kt not in _SUPPORTED_KEY_TYPES:
+                    log.raise_error('unsupported key type "%s"', kt)
+                if kt not in self.private_key.types:
+                    log.raise_error('requests key type "%s" but does not provide required params', kt)
 
-        self.services = spec.get('services')
+            self.services = spec.get('services')
 
-        self.dhparam_size = _get_int(spec, 'dhparam_size', defaults['dhparam_size'])
-        self.ecparam_curve = spec.get('ecparam_curve', defaults['ecparam_curve'])
+            self.dhparam_size = _get_int(spec, 'dhparam_size', defaults['dhparam_size'])
+            self.ecparam_curve = spec.get('ecparam_curve', defaults['ecparam_curve'])
 
-        self.ocsp_must_staple = _get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
-        self.ocsp_responder_urls = _get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
+            self.ocsp_must_staple = _get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
+            self.ocsp_responder_urls = _get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
 
-        self.ct_submit_logs = []
-        for ct_log_name in _get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
-            ct_log = ct_logs.get(ct_log_name)
-            if ct_log:
-                self.ct_submit_logs.append(SCTLog(ct_log_name, base64.b64decode(ct_log['id']), ct_log['url']))
-            else:
-                log.warning("certificate '%s' specify undefined ct_log '%s'", self.common_name, ct_log_name)
+            self.ct_submit_logs = []
+            for ct_log_name in _get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
+                ct_log = ct_logs.get(ct_log_name)
+                if ct_log:
+                    self.ct_submit_logs.append(SCTLog(ct_log_name, base64.b64decode(ct_log['id']), ct_log['url']))
+                else:
+                    log.warning("undefined ct_log '%s'", ct_log_name)
 
-        self.verify = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'verify', defaults['verify'])]
+            self.verify = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'verify', defaults['verify'])]
 
-        # Compute file owner
-        try:
-            selfuid = os.getuid()
-            user = spec.get('file_user', defaults['file_user'])
-            uid = pwd.getpwnam(user).pw_uid if user else selfuid
+            # Compute file owner
+            try:
+                selfuid = os.getuid()
+                user = spec.get('file_user', defaults['file_user'])
+                uid = pwd.getpwnam(user).pw_uid if user else selfuid
 
-            selfgid = os.getgid()
-            group = spec.get('file_group', defaults['file_group'])
-            gid = grp.getgrnam(group).gr_gid if group else selfgid
+                selfgid = os.getgid()
+                group = spec.get('file_group', defaults['file_group'])
+                gid = grp.getgrnam(group).gr_gid if group else selfgid
 
-            self.fileowner = FileOwner(uid, gid, uid == selfuid and gid == selfgid)
-        except Exception as e:
-            raise AcmeError("Failed to determine user and group ID") from e
+                self.fileowner = FileOwner(uid, gid, uid == selfuid and gid == selfgid)
+            except Exception as e:
+                log.raise_error("Failed to determine user and group ID", cause=e)
 
     @property
     def name(self):
@@ -186,6 +198,7 @@ def configure_logger(log_file: str, level: Optional[str]):
         log.warning("unsupported log level: %s", level)
         level = "normal"
     log.set_file(log_file, levels[level])
+    log.info('\n----- certmgr executed at %s', str(datetime.datetime.now()), extra={'prefix': ''})
 
 
 _DEFAULT_HOOKS = {
@@ -263,8 +276,8 @@ class Configuration(object):
                 except AcmeError:
                     raise
                 except Exception as e:
-                    raise AcmeError('[config] Error reading config file {}: {}', config_file_path, str(e)) from e
-        raise AcmeError('[config] Config file "{}" not found', file_path)
+                    log.raise_error('Error reading config file %s: %s', config_file_path, str(e), cause=e)
+        raise AcmeError('Config file "{}" not found', file_path)
 
     @classmethod
     def _load(cls, file_path: str) -> 'Configuration':
@@ -306,7 +319,7 @@ class Configuration(object):
 
             certificates = data.get('certificates')
             if not certificates:
-                raise AcmeError('section "certificates" is required and must not be empty.')
+                log.raise_error('section "certificates" is required and must not be empty.')
             cfg._parse_certificates(certificates, sct_logs)
 
         return cfg
@@ -409,19 +422,21 @@ class Configuration(object):
             http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
         return http_challenge_directory
 
-    def _parse_certificates(self, certificates: dict, sct_logs: dict):
+    def _parse_certificates(self, certificates: List[dict], sct_logs: dict):
         host_names = set()
         for certificate_spec in certificates:
+            assert isinstance(certificate_spec, dict), "'certificates' must be a list of objects"
             cert = CertificateDef(certificate_spec, self.settings, sct_logs)
             for host_name in cert.alt_names:
                 if host_name in host_names:
-                    log.info("{} host name defined in two certificates ({} and an other one)", host_name, cert.common_name)
+                    log.info("%s host name defined in two certificates (%s and an other one)", host_name,
+                             cert.common_name)
                 host_names.add(host_name)
 
             for v in cert.verify:
                 for host_name in v.hosts:
                     if not _host_in_list(host_name, cert.alt_names):
-                        raise AcmeError('[config] Verify host "{}" not specified in certificate "{}"', host_name, cert.common_name)
+                        log.raise_error('[%s] Verify host "%s" not specified', cert.common_name, host_name)
 
             self.certificates[cert.common_name] = cert
 

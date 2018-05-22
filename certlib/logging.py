@@ -2,7 +2,9 @@ import contextlib
 import logging
 import sys
 import traceback
-from typing import Optional
+from typing import Optional, NoReturn
+
+from certlib import AcmeError
 
 PROGRESS = 25
 logging.addLevelName(PROGRESS, "PROGRESS")
@@ -131,6 +133,7 @@ class _Logger(logging.LoggerAdapter):
             self._stream.setFormatter(_Formatter())
         self.logger.addHandler(self._stream)
 
+    # ----- Logging functions
     def debug(self, msg, *args, print_exc: bool = False, **kwargs):
         """
         Delegate a debug call to the underlying logger.
@@ -173,6 +176,15 @@ class _Logger(logging.LoggerAdapter):
         super().critical(msg, *args, **kwargs)
         if print_exc and self.isEnabledFor(logging.DEBUG):
             traceback.print_exc()
+
+    def raise_error(self, msg, *args, cause=None, **kwargs) -> NoReturn:
+        self.critical(msg, *args, **kwargs)
+        if args:
+            msg = msg % args
+        if cause:
+            raise AcmeError(self.extra['prefix'] + msg) from cause
+        else:
+            raise AcmeError(self.extra['prefix'] + msg)
 
 
 log = _Logger(logging.getLogger("certmgr"))
