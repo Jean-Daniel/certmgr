@@ -216,12 +216,13 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
                         retry: int, delay: int) -> List[messages.AuthorizationResource]:
     # answer challenges
     for domain_name, authorization_resource in authorization_resources.items():
-        challenge = _get_challenge(authorization_resource, 'http-01')
-        try:
-            log.debug('Answering challenge for %s', domain_name)
-            acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
-        except Exception as e:
-            log.raise_error('[%s] Error answering challenge', domain_name, cause=e)
+        with log.prefix("  [{}] ".format(domain_name)):
+            challenge = _get_challenge(authorization_resource, 'http-01')
+            try:
+                log.debug('Answering challenge')
+                acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
+            except Exception as e:
+                log.raise_error('Error answering challenge', cause=e)
 
     # poll for authorizations
     authorizations = []
@@ -230,36 +231,38 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
     attempts = collections.defaultdict(int)
     while waiting:
         when, domain_name, authorization_resource = waiting.pop(0)
-        now = datetime.datetime.now()
-        if now < when:
-            seconds = (when - now).seconds
-            if 0 < seconds:
-                time.sleep(seconds)
-                log.debug('Polling for %s', domain_name)
-        try:
-            authorization_resource, response = acme_client.poll(authorization_resource)
-            if 200 != response.status_code:
-                log.warning('%s while waiting for domain challenge for %s', response, domain_name)
-                waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
-                continue
-        except Exception as e:
-            log.raise_error('[%s] Error polling for authorization', domain_name, cause=e)
+        with log.prefix("  [{}] ".format(domain_name)):
+            now = datetime.datetime.now()
+            if now < when:
+                seconds = (when - now).seconds
+                if 0 < seconds:
+                    time.sleep(seconds)
+                    log.debug('Polling')
+            try:
+                authorization_resource, response = acme_client.poll(authorization_resource)
+                if 200 != response.status_code:
+                    log.warning('%s while waiting for domain challenge', response)
+                    waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
+                    continue
+            except Exception as e:
+                log.raise_error('Error polling for authorization', cause=e)
+                assert False  # help type checker
 
-        attempts[authorization_resource] += 1
-        if messages.STATUS_VALID == authorization_resource.body.status:
-            authorizations.append(authorization_resource)
-            log.progress('Domain "%s" authorized', domain_name)
-            continue
-        elif messages.STATUS_INVALID == authorization_resource.body.status:
-            e = _get_challenge(authorization_resource, 'http-01').error
-            log.raise_error('[%s] Authorization failed for domain %s: %s', domain_name, e.detail if e else 'Unknown error')
-        elif messages.STATUS_PENDING == authorization_resource.body.status:
-            if attempts[authorization_resource] > retry:
-                log.debug('Max retry reached for domain %s', domain_name)
-                log.raise_error('[%s] Authorization timed out', domain_name)
+            attempts[authorization_resource] += 1
+            if messages.STATUS_VALID == authorization_resource.body.status:
+                authorizations.append(authorization_resource)
+                log.progress('Domain authorized')
+                continue
+            elif messages.STATUS_INVALID == authorization_resource.body.status:
+                e = _get_challenge(authorization_resource, 'http-01').error
+                log.raise_error('Authorization failed : %s', e.detail if e else 'Unknown error')
+            elif messages.STATUS_PENDING == authorization_resource.body.status:
+                if attempts[authorization_resource] > retry:
+                    log.debug('Max retry reached')
+                    log.raise_error('Authorization timed out')
+                else:
+                    log.debug('Retrying')
+                    waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
             else:
-                log.debug('Retrying')
-                waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
-        else:
-            log.raise_error('[%s] Unexpected authorization status "%s"', domain_name, authorization_resource.body.status)
+                log.raise_error('Unexpected authorization status "%s"', authorization_resource.body.status)
     return authorizations
