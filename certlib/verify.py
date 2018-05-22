@@ -6,7 +6,6 @@ from typing import List, Optional, Tuple
 
 import OpenSSL
 
-from . import AcmeError
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate
 from .logging import log
