@@ -63,6 +63,11 @@ def update_links(root: str, context: CertificateContext):
             if name == context.common_name:
                 continue
             link_path = os.path.join(root, name)
+            if name in context.config.no_link:
+                # FIXME: remove is not referenced by an other certificate
+                log.debug("skipping '%s' link generation", name)
+                continue
+
             if os.path.islink(link_path):
                 if os.readlink(link_path) != context.common_name:
                     os.remove(link_path)
@@ -88,11 +93,12 @@ class CheckAction(Action):
         with contextlib.suppress(FileNotFoundError):
             s = os.stat(file, follow_symlinks=False)
             if stat.S_IMODE(s.st_mode) != mode:
-                log.info('file permission should be %s not %s', oct(mode), oct(stat.S_IMODE(s.st_mode)))
+                log.process('file permission should be %s not %s', oct(mode), oct(stat.S_IMODE(s.st_mode)))
                 os.chmod(file, mode)
 
             if s.st_uid != owner.uid or s.st_gid != owner.gid:
-                log.info('file "%s" owner/group should be %s/%s not %s/%s', file, owner.uid, owner.gid, s.st_uid, s.st_gid)
+                log.process('file "%s" owner/group should be %s/%s not %s/%s',
+                            file, owner.uid, owner.gid, s.st_uid, s.st_gid)
                 os.chown(file, owner.uid, owner.gid)
 
     def _check_file(self, file: str, mode: int, owner: FileOwner):
@@ -162,7 +168,7 @@ def prune_achives(archive_dir: Optional[str], days: int):
             continue
         if date < prune_date:
             try:
-                log.info("removing archive %s", entry)
+                log.process("removing archive %s", entry)
                 shutil.rmtree(os.path.join(archive_dir, entry))
             except Exception as e:
                 log.warning("error removing acrhive dir %s: %s", entry, str(e))
@@ -201,7 +207,7 @@ class RevokeAction(Action):
                         x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert.encode())
                         self.acme_client.revoke(josepy.ComparableX509(x509), 0)
                         revoked_certificates.append(item)
-                        log.info('certificate revoked')
+                        log.process('certificate revoked')
                     except Exception as error:
                         log.warning('Failed to revoke certificate: %s', str(error))
                 else:
@@ -235,7 +241,8 @@ class AuthAction(Action):
             # … and remove it from the order afterward
             order.update(csr_pem=None)
 
-            handle_authorizations(order, self.config.http_challenge_directory, self.acme_client, self.config.int('max_authorization_attempts'),
+            handle_authorizations(order, self.config.http_challenge_directory, self.acme_client,
+                                  self.config.int('max_authorization_attempts'),
                                   self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
 
@@ -245,4 +252,5 @@ class VerifyAction(Action):
     def run(self, context: CertificateContext):
         log.info("Verify certificates")
 
-        verify_certificate_installation(context, self.config.int('max_ocsp_verify_attempts'), self.config.int('ocsp_verify_retry_delay'))
+        verify_certificate_installation(context, self.config.int('max_ocsp_verify_attempts'),
+                                        self.config.int('ocsp_verify_retry_delay'))

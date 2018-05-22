@@ -31,7 +31,7 @@ def _get_bool(config: dict, key: str, default: bool = False) -> bool:
 def _get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
     value = config.get(key, default)
     return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (
-                value is None) else [value]
+            value is None) else [value]
 
 
 def _host_in_list(host_name, haystack_host_names):
@@ -125,7 +125,7 @@ class CertificateDef(object):
 
     __slots__ = ('common_name', 'private_key', 'alt_names',
                  'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
-                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify')
+                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'no_link')
 
     def __init__(self, spec: dict, defaults, ct_logs):
         self.common_name = spec['name'].strip().lower()
@@ -164,6 +164,7 @@ class CertificateDef(object):
                     log.warning("undefined ct_log '%s'", ct_log_name)
 
             self.verify = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'verify', defaults['verify'])]
+            self.no_link = set()
 
             # Compute file owner
             try:
@@ -423,15 +424,32 @@ class Configuration(object):
         return http_challenge_directory
 
     def _parse_certificates(self, certificates: List[dict], sct_logs: dict):
-        host_names = set()
+        common_names = set()
+        alt_names = {}
         for certificate_spec in certificates:
             assert isinstance(certificate_spec, dict), "'certificates' must be a list of objects"
             cert = CertificateDef(certificate_spec, self.settings, sct_logs)
+            if cert.common_name in common_names:
+                log.raise_error("duplicated common name in certificates definition: %s", cert.common_name)
+            common_names.add(cert.common_name)
+
             for host_name in cert.alt_names:
-                if host_name in host_names:
-                    log.info("%s host name defined in two certificates (%s and an other one)", host_name,
-                             cert.common_name)
-                host_names.add(host_name)
+                if host_name == cert.common_name:
+                    continue
+
+                if host_name in common_names:
+                    log.info(
+                        "alt name %s in certificate %s conflict with existing certificate. Link will not be generated",
+                        host_name, cert.common_name)
+                    cert.no_link.add(host_name)
+                elif host_name in alt_names:
+                    existing = alt_names[host_name]
+                    log.info(
+                        "alt name %s in certificate %s conflict with alt name in certificate %s."
+                        " Link will not be generated", host_name, cert.common_name, existing.common_name)
+                    existing.no_link.add(host_name)
+                    cert.no_link.add(host_name)
+                alt_names[host_name] = cert
 
             for v in cert.verify:
                 for host_name in v.hosts:
