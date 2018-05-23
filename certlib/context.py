@@ -279,6 +279,9 @@ class CertificateContext(object):
 
         self._key_cipher = _UNINITIALIZED  # type: Optional[KeyCipherData]
 
+    def __len__(self):
+        return len(self._items)
+
     def __iter__(self):
         return self._items.__iter__()
 

@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import time
-from typing import Optional
+from typing import List, Optional
 
 from acme import client, messages
 from asn1crypto import ocsp
@@ -17,7 +17,7 @@ from .acme import handle_authorizations
 from .actions import Action, prune_achives, update_links
 from .config import Configuration
 from .context import CertificateContext, CertificateItem
-from .crypto import Certificate, PrivateKey, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
+from .crypto import Certificate, PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
 from .logging import log
 from .ocsp import OCSP
 from .sct import SCTLog, fetch_sct
@@ -31,16 +31,50 @@ def _sct_datetime(sct_timestamp):
 
 class UpdateAction(Action):
 
-    def __init__(self, config: Configuration, args: argparse.Namespace, acme_client: client.ClientV2):
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser):
+        super().add_arguments(parser)
+        parser.add_argument('--certs',
+                            action='store_true', dest='certs', default=False,
+                            help='Update certificates only')
+        parser.add_argument('--params',
+                            action='store_true', dest='params', default=False,
+                            help='Update EC and DH parameters only')
+        parser.add_argument('--ocsp',
+                            action='store_true', dest='ocsp', default=False,
+                            help='Update OCSP responses only')
+        parser.add_argument('--sct',
+                            action='store_true', dest='sct', default=False,
+                            help='Update Signed Certificate Timestamps only')
+
+        parser.add_argument('--verify',
+                            action='store_true', dest='verify', default=False,
+                            help='Verify install@ed certificates')
+
+        parser.add_argument('--force',
+                            action='store_true', dest='force', default=False,
+                            help='Force refresh of existing files even if not needed')
+        parser.add_argument('--no-auth',
+                            action='store_true', dest='no_auth', default=False,
+                            help='Assume all domain names are already verified and do not perform any authorization')
+        parser.add_argument('--fast-dhparams',
+                            action='store_true', dest='fast_dhparams', default=False,
+                            help='Using 2ton.com.au online generator to get dhparams instead of generating them locally')
+
+    def __init__(self, config: Configuration, args: argparse.Namespace, contexts: List[CertificateContext], acme_client: client.ClientV2):
         if not args.certs and not args.params and not args.ocsp and not args.sct:
             args.certs = True
             args.params = True
             args.ocsp = True
             args.sct = True
-        super().__init__(config, args, acme_client)
+        super().__init__(config, args, contexts, acme_client)
         self._done = []
         self._services = set()
         self._root_certificates = {}
+        # counter used to avoid fetching duplicated dhparam when using dhparam server.
+        # using counter in decreasing order so if a dhparam rollout occurs on the server
+        # while updating the certificates, we don't accidentally fetch 2 times the same param
+        self._counter = len(contexts)
 
     def root_certificate(self, key_type: str) -> Optional[Certificate]:
         if key_type not in self._root_certificates:
@@ -134,10 +168,11 @@ class UpdateAction(Action):
             if dhparam_size or ecparam_curve:
                 # generate params if needed
                 if dhparam_size and not dhparams:
-                    log.progress('Generating %s bit Diffie-Hellman parameters', dhparam_size)
-                    dhparams = generate_dhparam(dhparam_size)
+                    if self.args.fast_dhparams:
+                        dhparams = fetch_dhparam(dhparam_size, self._counter)
+                    else:
+                        dhparams = generate_dhparam(dhparam_size)
                 if ecparam_curve and not ecparams:
-                    log.progress('Generating %s elliptical curve parameters', ecparam_curve)
                     ecparams = generate_ecparam(ecparam_curve)
                 context.update(dhparams, ecparams)
             elif context.dhparams or context.ecparams:
@@ -148,6 +183,8 @@ class UpdateAction(Action):
                 log.debug("DH and EC params updated")
             else:
                 log.debug("DH and EC up to date")
+
+            self._counter -= 1
 
     def update_ocsp(self, context: CertificateContext):
         log.info('Update OCSP Response')

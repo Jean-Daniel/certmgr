@@ -1,14 +1,13 @@
 import abc
 import contextlib
 import hashlib
-import logging
 import re
 import subprocess
-import urllib
 from datetime import datetime
 from io import BytesIO
 from typing import Callable, Iterable, List, Optional, Tuple, Type, TypeVar, Union
 
+import requests
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
@@ -302,11 +301,15 @@ def save_chain(chain_file: BytesIO, chain: CertificateChain, lead_in=b''):
 # ----- Params
 def generate_dhparam(dhparam_size: int) -> bytes:
     assert dhparam_size > 0
+    if dhparam_size > 2048:
+        log.info("generating DH param larger than 2048 bit can take an insanely great amount of time (requesting %s bit param)", dhparam_size)
+    log.progress('Generating %s bit Diffie-Hellman parameters', dhparam_size)
     return subprocess.check_output(['openssl', 'dhparam', str(dhparam_size)], stderr=subprocess.DEVNULL)
 
 
 def generate_ecparam(ecparam_curve: str) -> bytes:
     assert ecparam_curve
+    log.progress('Generating %s elliptical curve parameters', ecparam_curve)
     return subprocess.check_output(['openssl', 'ecparam', '-name', ecparam_curve], stderr=subprocess.DEVNULL)
 
 
@@ -340,22 +343,19 @@ def get_ecparam_curve(ecparam_pem: bytes) -> str:
     log.raise_error("ecparam size extraction failed: %s", output.decode('ascii'))
 
 
-def fetch_dhparams(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
-    assert dhparam_size in (2048, 3072, 4096, 8192)
+def fetch_dhparam(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
+    if dhparam_size not in (2048, 3072, 4096, 8192):
+        log.raise_error("--fast-params only supports 2048, 3072, 4096 and 8192 bit param (and not %s)", dhparam_size)
     url = "https://2ton.com.au/dhparam/{}/{}".format(dhparam_size, dhparam_idx % 128)
-    request = urllib.request.Request(url=url)
-    request.add_header('Host', '2ton.com.au')
     try:
-        with urllib.request.urlopen(request) as response:
-            # XXX add validation of response
-            return response.read().decode()
-    except urllib.error.HTTPError as error:
-        if (400 <= error.code) and (error.code < 500):
-            logging.warning('dhparams fetching failed (HTTP error: %s %s):\n%s', error.code, error.reason, error.read())
+        log.progress('Fetching %s bit Diffie-Hellman parameters (index %s)', dhparam_size, dhparam_idx)
+        req = requests.get(url)
+        if req.status_code == 200:
+            return req.content
+        if 400 <= req.status_code < 500:
+            log.raise_error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s): "%s"', req.status_code, req.reason, req.content)
         else:
-            logging.warning('dhparams fetching failed (HTTP error: %s %s)', error.code, error.reason)
-    except urllib.error.URLError as error:
-        logging.warning('dhparams fetching failed: %s', error.reason)
-    except Exception as error:
-        logging.warning('dhparams fetching failed: %s', str(error))
+            log.raise_error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s)', req.status_code, req.reason)
+    except Exception as e:
+        log.raise_error('dhparams fetching failed', cause=e)
     return None

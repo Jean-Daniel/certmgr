@@ -1,11 +1,12 @@
 import abc
+import argparse
 import contextlib
 import datetime
 import os
 import shutil
 import stat
 from argparse import Namespace
-from typing import Optional
+from typing import List, Optional
 
 import OpenSSL
 import josepy
@@ -25,11 +26,16 @@ from .verify import verify_certificate_installation
 class Action(metaclass=abc.ABCMeta):
     has_acme_client = True
 
-    def __init__(self, config: Configuration, args: Namespace, acme_client: Optional[client.ClientV2]):
+    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client: Optional[client.ClientV2]):
         self.config = config
         self.args = args
         self.acme_client = acme_client
         assert (not self.has_acme_client) or acme_client
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser):
+        parser.add_argument('certificate_names', nargs='*')
+        parser.set_defaults(cls=cls)
 
     @abc.abstractmethod
     def run(self, context: CertificateContext):
@@ -84,8 +90,8 @@ def update_links(root: str, context: CertificateContext):
 class CheckAction(Action):
     has_acme_client = False
 
-    def __init__(self, config: Configuration, args: Namespace, acme_client=None):
-        super().__init__(config, args, acme_client)
+    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client=None):
+        super().__init__(config, args, contexts, acme_client)
         self._checked = dict()
 
     @staticmethod
@@ -177,8 +183,15 @@ def prune_achives(archive_dir: Optional[str], days: int):
 class PruneAction(Action):
     has_acme_client = False
 
-    def __init__(self, config: Configuration, args: Namespace, acme_client=None):
-        super().__init__(config, args, acme_client)
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser):
+        super().add_arguments(parser)
+        parser.add_argument('--days', required=False,
+                            type=int, dest='days', default=-1,
+                            help='use to override archive_days config')
+
+    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client=None):
+        super().__init__(config, args, contexts, acme_client)
         self.days = self.args.days
         if self.days < 0:
             self.days = self.config.int('archive_days')

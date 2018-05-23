@@ -53,60 +53,22 @@ class AcmeManager(object):
         subparsers = argparser.add_subparsers(description='acmetool subcommand', dest='action')
 
         action = subparsers.add_parser('check', help='check installed files permissions and symlinks')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.CheckAction)
+        actions.CheckAction.add_arguments(action)
 
         action = subparsers.add_parser('revoke', help='revoke certificates')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.RevokeAction)
+        actions.RevokeAction.add_arguments(action)
 
         action = subparsers.add_parser('auth', help='perform domain authentification')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.AuthAction)
+        actions.AuthAction.add_arguments(action)
 
         action = subparsers.add_parser('update', help='update keys, certificates, oscp, sct and params')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=UpdateAction)
-        action.add_argument('--certs',
-                            action='store_true', dest='certs', default=False,
-                            help='Update certificates only')
-        action.add_argument('--params',
-                            action='store_true', dest='params', default=False,
-                            help='Update EC and DH parameters only')
-        action.add_argument('--ocsp',
-                            action='store_true', dest='ocsp', default=False,
-                            help='Update OCSP responses only')
-        action.add_argument('--sct',
-                            action='store_true', dest='sct', default=False,
-                            help='Update Signed Certificate Timestamps only')
-
-        action.add_argument('--verify',
-                            action='store_true', dest='verify', default=False,
-                            help='Verify installed certificates')
-
-        action.add_argument('--force',
-                            action='store_true', dest='force', default=False,
-                            help='Force refresh of existing files even if not needed')
-        action.add_argument('--no-auth',
-                            action='store_true', dest='no_auth', default=False,
-                            help='Assume all domain names are already verified and do not perform any authorization')
+        UpdateAction.add_arguments(action)
 
         action = subparsers.add_parser('verify', help='verify installed certificates')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.VerifyAction)
+        actions.VerifyAction.add_arguments(action)
 
         action = subparsers.add_parser('cleanup', help='remove old archives')
-        action.add_argument('certificate_names', nargs='*')
-        action.set_defaults(cls=actions.PruneAction)
-
-        action.add_argument('--days', required=False,
-                            type=int, dest='days', default=-1,
-                            help='use to override archive_days config')
-
-        # argparser.set_default_subparser('update')
-        # action.add_argument('--fast-dhparams',
-        #                        action='store_true', dest='fast_dhparams', default=False,
-        #                        help='Using 2ton.com.au online generator to get dhparams instead of generating them locally')
+        actions.PruneAction.add_arguments(action)
 
         self.args = argparser.parse_args()
         if not getattr(self.args, 'cls', None):
@@ -135,21 +97,29 @@ class AcmeManager(object):
                                        self.config.account.get('passphrase'), archive_dir)
 
     def _run(self):
-        acme_client = None
-        cls = self.args.cls
-        if cls.has_acme_client:
-            acme_client = self.connect_client()
-        action = cls(self.config, self.args, acme_client)
+        contexts = []
         for certificate_name in self.args.certificate_names or self.config.certificates.keys():
             cert = self.config.certificates.get(certificate_name)
             if not cert:
                 log.warning("requested certificate '%s' does not exists in config", certificate_name)
                 continue
+            contexts.append(CertificateContext(cert, self.config.data_dir))
+
+        if not contexts:
+            log.warning("nothing to process !")
+            return
+
+        acme_client = None
+        cls = self.args.cls
+        if cls.has_acme_client:
+            acme_client = self.connect_client()
+        action = cls(self.config, self.args, contexts, acme_client)
+        for context in contexts:
             try:
-                with log.prefix('[{}] '.format(cert.name)):
-                    action.run(CertificateContext(cert, self.config.data_dir))
+                with log.prefix('[{}] '.format(context.name)):
+                    action.run(context)
             except AcmeError as e:
-                log.error("[%s] processing failed. No files updated: %s", cert.name, str(e), print_exc=True)
+                log.error("[%s] processing failed. No files updated: %s", context.name, str(e), print_exc=True)
 
         action.finalize()
 
