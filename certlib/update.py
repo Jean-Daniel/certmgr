@@ -132,7 +132,7 @@ class UpdateAction(Action):
                             log.raise_error("Certificate generation failed. Missing certificate or chain in response.")
                         item.update(key, certificate, chain)
                     except Exception as e:
-                        log.raise_error('Certificate issuance failed', item.name, item.type.upper(), cause=e)
+                        log.raise_error('Certificate issuance failed', cause=e)
 
                     log.progress('New certificate issued')
 

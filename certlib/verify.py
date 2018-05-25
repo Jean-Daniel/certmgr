@@ -56,7 +56,7 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
     else:
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
-        log.raise_error('Unsuppoprted STARTTLS type: ' + ty)
+        log.raise_error('Unsuppoprted STARTTLS type: %s', ty)
     sock.settimeout(None)
 
 

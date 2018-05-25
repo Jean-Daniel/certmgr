@@ -189,7 +189,7 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
             # remove already saved challenges
             for challenge_file in challenge_http_responses.values():
                 os.remove(challenge_file)
-            log.raise_error('[%s] Unable to create acme-challenge file "{}"', domain_name, challenge_file_path, cause=e)
+            log.raise_error('[%s] Unable to create acme-challenge file "%s"', domain_name, challenge_file_path, cause=e)
     try:
         hooks.call()
         # Process authorizations
