@@ -200,7 +200,7 @@ For example:
       },
       "certificates": [
           {
-              "name": example.com,
+              "name": "example.com",
               "alt_names": {
                   "example.com": ["@", "www"]
               }
@@ -226,7 +226,6 @@ For example:
 
 ```json
   {
-      ...
       "http_challenges": {
           "example.com": "/var/www/htdocs/.well-known/acme-challenge",
           "www.example.com": "/var/www/htdocs/.well-known/acme-challenge"
@@ -449,8 +448,7 @@ Example:
       "account": {
           "email": "admin@example.com",
           "passphrase": true
-      },
-      ...
+      }
   }
 ```
 
@@ -724,7 +722,7 @@ Example:
 ```json
   {
       "http_challenges": {
-          "example.com": "/var/www/htdocs/.well-known/acme-challenge"
+          "example.com": "/var/www/htdocs/.well-known/acme-challenge",
           "www.example.com": "/var/www/htdocs/.well-known/acme-challenge"
       }
   }
@@ -820,8 +818,8 @@ Example:
 ```json
   {
       "hooks": {
-          certificate_installed": [
-              { args: ["scp", "{certificate_file}", "remote-server:/etc/ssl/certs/" ] },
+          "certificate_installed": [
+              { "args": ["scp", "{certificate_file}", "remote-server:/etc/ssl/certs/" ] },
               "scp {certificate_file} remote-server2:/etc/ssl/certs/"
           ]
       }
