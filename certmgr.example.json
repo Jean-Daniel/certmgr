@@ -53,7 +53,8 @@
     "full_key_installed": null,
     "params_installed": null,
     "sct_installed": null,
-    "ocsp_installed": null
+    "ocsp_installed": null,
+    "certificates_updated": null
   },
   "ct_logs": {
     "google_pilot": {

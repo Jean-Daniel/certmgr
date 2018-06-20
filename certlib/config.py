@@ -379,7 +379,7 @@ class Configuration(object):
             'znc': 'systemctl restart znc'
         }
 
-        self.certificates = OrderedDict()  # type: Dict[str, CertificateDef]
+        self._certificates = OrderedDict()  # type: Dict[str, CertificateDef]
         self._http_challenges = {}
 
     def get(self, item: str, default=None):
@@ -396,6 +396,20 @@ class Configuration(object):
 
     def service(self, service_name: str) -> Optional[str]:
         return self.services[service_name]
+
+    def certificate(self, name: str) -> List[CertificateDef]:
+        cert = self._certificates.get(name)
+        if cert:
+            return [cert]
+
+        aliases = []
+        for cert in self._certificates.values():
+            if name in cert.alt_names:
+                aliases.append(cert)
+        return aliases
+
+    def certificate_names(self) -> Iterable[str]:
+        return self._certificates.keys()
 
     @property
     def data_dir(self) -> str:
@@ -456,7 +470,7 @@ class Configuration(object):
                     if not _host_in_list(host_name, cert.alt_names):
                         log.raise_error('[%s] Verify host "%s" not specified', cert.common_name, host_name)
 
-            self.certificates[cert.common_name] = cert
+            self._certificates[cert.common_name] = cert
 
     def _parse_hooks(self, values: dict):
         for name, spec in values.items():

@@ -99,17 +99,26 @@ class AcmeManager(object):
                                        self.config.account.get('passphrase'), archive_dir)
 
     def _run(self):
+        certs = {}
         contexts = []
-        for certificate_name in self.args.certificate_names or self.config.certificates.keys():
-            cert = self.config.certificates.get(certificate_name)
+        for certificate_name in self.args.certificate_names or self.config.certificate_names():
+            cert = self.config.certificate(certificate_name)
             if not cert:
                 log.warning("requested certificate '%s' does not exists in config", certificate_name)
                 continue
-            contexts.append(CertificateContext(cert, self.config.data_dir))
+            if len(cert) > 1:
+                log.warning("[%s] ambiguous certificate alias. Use the certificate name instead.", certificate_name)
+                continue
+            cert = cert[0]
+            if cert.name in certs:
+                log.info("requesting duplicated certificate (%s and %s)", certs[cert.name], certificate_name)
+            else:
+                contexts.append(CertificateContext(cert, self.config.data_dir))
+                certs[cert.name] = certificate_name
 
         if not contexts:
             log.warning("nothing to process !")
-            return
+            return (), ()
 
         ok = []
         errors = []
