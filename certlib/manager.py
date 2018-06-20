@@ -1,5 +1,7 @@
 import argparse
 import contextlib
+from typing import Tuple, List
+
 import fcntl
 import logging
 import os
@@ -109,6 +111,8 @@ class AcmeManager(object):
             log.warning("nothing to process !")
             return
 
+        ok = []
+        errors = []
         acme_client = None
         cls = self.args.cls
         if cls.has_acme_client:
@@ -118,12 +122,15 @@ class AcmeManager(object):
             try:
                 with log.prefix('[{}] '.format(context.name)):
                     action.run(context)
+                ok.append(context.name)
             except AcmeError as e:
                 log.error("[%s] processing failed. No files updated: %s", context.name, str(e), print_exc=True)
+                errors.append(context.name)
 
         action.finalize()
+        return ok, errors
 
-    def run(self):
+    def run(self) -> Tuple[List, List]:
         lock_path = self.config.get('lock_file')
         if self.args.random_wait:
             delay_seconds = min(random.randrange(min(self.config.int('min_run_delay'), self.config.int('max_run_delay')),
@@ -150,10 +157,10 @@ class AcmeManager(object):
                     raise AcmeError('Client already running')
 
             with contextlib.closing(lock_file):
-                self._run()
+                return self._run()
         else:
             # not lock path specified.
-            self._run()
+            return self._run()
 
 
 def try_lock(lock_file) -> bool:

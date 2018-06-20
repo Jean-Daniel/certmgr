@@ -53,7 +53,9 @@ verify_requirements()
 if __name__ == '__main__':  # called from the command line
     try:
         script_dir = os.path.dirname(os.path.realpath(__file__))
-        AcmeManager(script_dir).run()
+        ok, errors = AcmeManager(script_dir).run()
+        if errors:
+            exit(1)
     except AcmeError as e:
         traceback.print_exc()
         exit(1)
