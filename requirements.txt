@@ -1,19 +1,20 @@
-acme==0.24.0
+acme==0.25.1
 josepy==1.1.0
 pyOpenSSL==18.0.0
 
-requests==2.18.4
+requests==2.19.1
 asn1crypto==0.24.0
 cryptography==2.2.2
 ## The following requirements were added by pip freeze:
 certifi==2018.4.16
 cffi==1.11.5
 chardet==3.0.4
-idna==2.6
+idna==2.7
 mock==2.0.0
-pbr==4.0.3
+pbr==4.0.4
 pycparser==2.18
-pyRFC3339==1.0
+pyRFC3339==1.1
 pytz==2018.4
+requests-toolbelt==0.8.0
 six==1.11.0
-urllib3==1.22
+urllib3==1.23
