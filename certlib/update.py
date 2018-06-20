@@ -49,7 +49,7 @@ class UpdateAction(Action):
 
         parser.add_argument('--verify',
                             action='store_true', dest='verify', default=False,
-                            help='Verify install@ed certificates')
+                            help='Verify installed certificates')
 
         parser.add_argument('--force',
                             action='store_true', dest='force', default=False,
