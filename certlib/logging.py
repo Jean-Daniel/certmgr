@@ -99,7 +99,7 @@ class _Logger(logging.LoggerAdapter):
 
     @color.setter
     def color(self, value: bool):
-        if value:
+        if value and sys.stderr.isatty():
             if not self._stream:
                 self.reset(True, logging.NOTSET)
             else:
