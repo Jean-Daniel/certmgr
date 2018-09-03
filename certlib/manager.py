@@ -89,7 +89,8 @@ class AcmeManager(object):
 
         self.config = Configuration.load(self.args.config_path, ('.', os.path.join('/etc', 'certmgr'), self.script_dir))
         # update color setting
-        log.color = self.config.bool('color_output')
+        if not self.args.no_color:
+            log.color = self.config.bool('color_output')
 
     def connect_client(self) -> client.ClientV2:
         account_dir = self.config.account_dir

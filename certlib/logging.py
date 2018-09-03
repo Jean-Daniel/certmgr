@@ -128,7 +128,7 @@ class _Logger(logging.LoggerAdapter):
         self._stream = logging.StreamHandler(sys.stderr)
         self._stream.level = level
         # enable color output
-        if sys.stderr.isatty() and color:
+        if color and sys.stderr.isatty():
             self._stream.setFormatter(ColorFormatter())
         else:
             self._stream.setFormatter(_Formatter())
