@@ -18,7 +18,7 @@ from .logging import PROGRESS, log
 from .update import UpdateAction
 
 
-class AcmeManager(object):
+class AcmeManager:
 
     def __init__(self, script_dir):
         self.script_dir = script_dir

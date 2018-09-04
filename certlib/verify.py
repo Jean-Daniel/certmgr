@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 import OpenSSL
 
+from certlib.config import VerifyDef
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate
 from .logging import log
@@ -157,7 +158,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                 log.error('Unable to connect: %s', str(error))
 
 
-def verify_certificate_installation(context: CertificateContext, max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int):
+def verify_certificate_installation(context: CertificateContext):
     key_type_ciphers = {}
     ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
     ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
@@ -165,8 +166,8 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
     for key_type in context.config.key_types:
         key_type_ciphers[key_type] = ':'.join([cipher_name for cipher_name in all_ciphers if key_type.upper() in cipher_name]).encode('ascii')
 
-    verify_list = context.config.verify
-    if not verify_list:
+    verify = context.config.verify  # type: VerifyDef
+    if not verify.targets:
         return
 
     for item in context:  # type: CertificateItem
@@ -180,9 +181,8 @@ def verify_certificate_installation(context: CertificateContext, max_ocsp_verify
             log.warning('chain not found')
             continue
 
-        for verify in verify_list:
-            if verify.key_types and item.type not in verify.key_types:
+        for target in verify.targets:
+            if target.key_types and item.type not in target.key_types:
                 continue
-            for host_name in verify.hosts or context.domain_names:
-                _verify_certificate_installation(item, host_name, verify.port, verify.starttls, key_type_ciphers[item.type],
-                                                 max_ocsp_verify_attempts, ocsp_verify_retry_delay)
+            for host_name in target.hosts or context.domain_names:
+                _verify_certificate_installation(item, host_name, target.port, target.starttls, key_type_ciphers[item.type], verify.ocsp_max_attempts, verify.ocsp_retry_delay)

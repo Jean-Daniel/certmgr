@@ -190,7 +190,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
 
 
 # ======= Hooks Management
-class Hook(object):
+class Hook:
     __slots__ = ('name', 'args', 'cwd')
 
     def __init__(self, name, spec):
@@ -231,7 +231,7 @@ class Hook(object):
             log.warning('Failed to call hook %s (%s): %s', self.name, args, str(e))
 
 
-class Hooks(object):
+class Hooks:
 
     def __init__(self, commands: Dict[str, Optional[List[Hook]]]):
         self._hooks = []

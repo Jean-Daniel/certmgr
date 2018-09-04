@@ -6,7 +6,7 @@ import requests
 from asn1crypto import ocsp
 
 
-class OCSP(object):
+class OCSP:
 
     def __init__(self, response: ocsp.OCSPResponse):
         self.asn1 = response

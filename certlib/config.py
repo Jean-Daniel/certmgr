@@ -6,7 +6,7 @@ import logging
 import os
 import pwd
 from collections import OrderedDict
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Container, Dict, Iterable, List, Optional, Union
 
 import collections
 
@@ -47,9 +47,9 @@ def _host_in_list(host_name, haystack_host_names):
     return None
 
 
-def _check(section: str, dest: dict, values: dict):
+def _check(section: str, expected: Container[str], values: dict):
     for key, value in values.items():
-        if key not in dest:
+        if key not in expected:
             log.warning("unsupported key '%s' in section '%s'", key, section)
 
 
@@ -60,7 +60,7 @@ def _merge(section: str, dest: dict, values: dict, check: bool = True):
     return dest
 
 
-class VerifyTarget(object):
+class VerifyTarget:
     __slots__ = ('port', 'hosts', 'starttls', 'key_types')
 
     def __init__(self, spec):
@@ -88,7 +88,24 @@ class VerifyTarget(object):
                 log.raise_error('Invalid port definition "%s"', self.port)
 
 
-class PrivateKeyDef(object):
+class VerifyDef:
+    __slots__ = ('targets', 'ocsp_max_attempts', 'ocsp_retry_delay')
+
+    def __init__(self, spec, defaults: 'VerifyDef' = None):
+        self.ocsp_max_attempts = defaults.ocsp_max_attempts if defaults else 10
+        self.ocsp_retry_delay = defaults.ocsp_retry_delay if defaults else 5
+        if isinstance(spec, list):
+            self.targets = [VerifyTarget(verify_spec) for verify_spec in spec]
+        elif spec:
+            _check("verify", {'targets', 'ocsp_max_attempts', 'ocsp_retry_delay'}, spec)
+            self.targets = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'targets')]
+            self.ocsp_max_attempts = _get_int(spec, 'ocsp_max_attempts', self.ocsp_max_attempts)
+            self.ocsp_retry_delay = _get_int(spec, 'ocsp_retry_delay', self.ocsp_retry_delay)
+        else:
+            self.targets = []
+
+
+class PrivateKeyDef:
     __slots__ = ('types', 'size', 'curve', 'passphrase')
 
     SUPPORTED_KEYS = ('key_size', 'key_curve', 'key_passphrase')
@@ -117,7 +134,7 @@ class PrivateKeyDef(object):
         log.raise_error('Unsupported key type %s', key_type)
 
 
-class CertificateDef(object):
+class CertificateDef:
     SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
                           'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
                           'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user',
@@ -127,7 +144,7 @@ class CertificateDef(object):
                  'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'no_link')
 
-    def __init__(self, spec: dict, defaults, ct_logs):
+    def __init__(self, spec: dict, defaults, verify: Optional[VerifyDef], ct_logs):
         self.common_name = spec['name'].strip().lower()
 
         with log.prefix("[{}] ".format(self.common_name)):
@@ -163,7 +180,7 @@ class CertificateDef(object):
                 else:
                     log.warning("undefined ct_log '%s'", ct_log_name)
 
-            self.verify = [VerifyTarget(verify_spec) for verify_spec in _get_list(spec, 'verify', defaults['verify'])]
+            self.verify = VerifyDef(spec.get('verify'), verify)
             self.no_link = set()
 
             # Compute file owner
@@ -264,7 +281,7 @@ _DEFAULT_CT_LOGS = {
 }
 
 
-class Configuration(object):
+class Configuration:
 
     @classmethod
     def load(cls, file_path: str, search_paths: Iterable[str] = ()) -> 'Configuration':
@@ -318,10 +335,11 @@ class Configuration(object):
                 else:
                     log.warning('unknown section name: "%s"', section)
 
+            verify = VerifyDef(cfg.settings['verify'])
             certificates = data.get('certificates')
             if not certificates:
                 log.raise_error('section "certificates" is required and must not be empty.')
-            cfg._parse_certificates(certificates, sct_logs)
+            cfg._parse_certificates(certificates, verify, sct_logs)
 
         return cfg
 
@@ -331,7 +349,11 @@ class Configuration(object):
         self.account = {'email': None, 'passphrase': None}
         self.settings = {
             'data_dir': '/etc/certmgr',
+
+            # auth
             'http_challenge_dir': None,
+            'max_authorization_attempts': 30,
+            'authorization_delay': 10,
 
             'color_output': True,
             'log_level': 'info',
@@ -340,11 +362,8 @@ class Configuration(object):
             'acme_directory_url': 'https://acme-v02.api.letsencrypt.org/directory',
             'renewal_days': 30,
             'archive_days': 30,
-            'max_authorization_attempts': 30,
-            'authorization_delay': 10,
             'cert_poll_time': 30,
-            'max_ocsp_verify_attempts': 10,
-            'ocsp_verify_retry_delay': 5,
+            # running with random wait time
             'min_run_delay': 300,
             'max_run_delay': 3600,
 
@@ -359,7 +378,11 @@ class Configuration(object):
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
-            'verify': [443],
+            'verify': {
+                'targets': [443],
+                'ocsp_max_attempts': 10,
+                'ocsp_retry_delay': 5,
+            },
 
             'lock_file': '/var/run/lock/certmgr.lock',
         }
@@ -437,12 +460,12 @@ class Configuration(object):
             http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
         return http_challenge_directory
 
-    def _parse_certificates(self, certificates: List[dict], sct_logs: dict):
+    def _parse_certificates(self, certificates: List[dict], verify: Optional[VerifyDef], sct_logs: dict):
         common_names = set()
         alt_names = {}
         for certificate_spec in certificates:
             assert isinstance(certificate_spec, dict), "'certificates' must be a list of objects"
-            cert = CertificateDef(certificate_spec, self.settings, sct_logs)
+            cert = CertificateDef(certificate_spec, self.settings, verify, sct_logs)
             if cert.common_name in common_names:
                 log.raise_error("duplicated common name in certificates definition: %s", cert.common_name)
             common_names.add(cert.common_name)
@@ -465,7 +488,7 @@ class Configuration(object):
                     cert.no_link.add(host_name)
                 alt_names[host_name] = cert
 
-            for v in cert.verify:
+            for v in cert.verify.targets:
                 for host_name in v.hosts:
                     if not _host_in_list(host_name, cert.alt_names):
                         log.raise_error('[%s] Verify host "%s" not specified', cert.common_name, host_name)

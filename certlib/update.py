@@ -396,13 +396,11 @@ class UpdateAction(Action):
 
         # Verify is needed
         if self.args.verify:
-            max_ocsp_verify_attempts = self.config.int('max_ocsp_verify_attempts')
-            ocsp_verify_retry_delay = self.config.int('ocsp_verify_retry_delay')
             for context in self._done:
                 with log.prefix("[{}] ".format(context.name)):
                     log.info("Verify certificates")
                     try:
-                        verify_certificate_installation(context, max_ocsp_verify_attempts, ocsp_verify_retry_delay)
+                        verify_certificate_installation(context)
                     except AcmeError as e:
                         log.error("validation error: %s", str(e))
 

@@ -16,7 +16,7 @@ from .utils import ArchiveAndWriteOperation, FileOwner, KeyCipherData, WriteOper
 _UNINITIALIZED = 'uninitialized'
 
 
-class CertificateItem(object):
+class CertificateItem:
     __slots__ = ('type', 'params', 'context', 'data_dir',
                  '_scts', '_ocsp_response', '_ocsp_response_updated',
                  '_key', '_chain', '_certificate', '_certificate_updated')
@@ -262,7 +262,7 @@ class CertificateItem(object):
         return None
 
 
-class CertificateContext(object):
+class CertificateContext:
 
     # __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
 

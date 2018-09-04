@@ -25,7 +25,7 @@ def _user_agent():
     return 'certmgr/{version} acme-python/{acme_version}'.format(version=VERSION, acme_version=acmelib.version if acmelib else "0.0.0")
 
 
-class _PasswordProvider(object):
+class _PasswordProvider:
 
     def __init__(self, passphrase):
         self.key_cipher = None

@@ -147,7 +147,7 @@ class _ECDSAKey(PrivateKey):
 
 
 # -------- Certificates
-class Certificate(object):
+class Certificate:
 
     def __init__(self, cert: x509.Certificate):
         self._cert = cert

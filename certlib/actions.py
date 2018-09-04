@@ -265,5 +265,4 @@ class VerifyAction(Action):
     def run(self, context: CertificateContext):
         log.info("Verify certificates")
 
-        verify_certificate_installation(context, self.config.int('max_ocsp_verify_attempts'),
-                                        self.config.int('ocsp_verify_retry_delay'))
+        verify_certificate_installation(context)
