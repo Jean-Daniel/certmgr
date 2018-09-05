@@ -1,6 +1,5 @@
 import abc
 import argparse
-import contextlib
 import datetime
 import os
 import shutil
@@ -48,16 +47,20 @@ class Action(metaclass=abc.ABCMeta):
 def _process_symlink(root: str, name: str, target: str, link: str):
     link_path = os.path.join(root, name, link)
     if os.path.exists(target):
-        with contextlib.suppress(FileNotFoundError):
+        try:
             if os.readlink(link_path) == target:
                 return
             os.remove(link_path)
+        except FileNotFoundError:
+            pass
         log.debug("symlink '%s' -> '%s' created", link_path, target)
         os.symlink(target, link_path)
     else:
-        with contextlib.suppress(FileNotFoundError):
+        try:
             os.remove(link_path)
             log.debug("symlink '%s' removed", link_path)
+        except FileNotFoundError:
+            pass
 
 
 def update_links(root: str, context: CertificateContext):
@@ -96,7 +99,7 @@ class CheckAction(Action):
 
     @staticmethod
     def _check(file: str, mode: int, owner: FileOwner):
-        with contextlib.suppress(FileNotFoundError):
+        try:
             s = os.stat(file, follow_symlinks=False)
             if stat.S_IMODE(s.st_mode) != mode:
                 log.progress('file permission should be %s not %s', oct(mode), oct(stat.S_IMODE(s.st_mode)))
@@ -106,7 +109,9 @@ class CheckAction(Action):
                 log.progress('file "%s" owner/group should be %s/%s not %s/%s',
                              file, owner.uid, owner.gid, s.st_uid, s.st_gid)
                 os.chown(file, owner.uid, owner.gid)
-
+        except FileNotFoundError:
+            pass
+        
     def _check_file(self, file: str, mode: int, owner: FileOwner):
         self._check(file, mode, owner)
         # As dir path may contains variables, it can be different for each certificate item

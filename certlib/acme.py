@@ -39,14 +39,17 @@ class _PasswordProvider:
 def connect_client(account_dir: str, account: str, directory_url: str, passphrase, archive_dir: Optional[str]) -> client.ClientV2:
     registration = None
     registration_path = os.path.join(account_dir, 'registration.json')
-    with contextlib.suppress(FileNotFoundError), open(registration_path) as f:
-        registration = messages.RegistrationResource.json_loads(f.read())
-        log.debug('Loaded registration %s', registration_path)
-        acme_url = urllib.parse.urlparse(directory_url)
-        reg_url = urllib.parse.urlparse(registration.uri)
-        if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
-            log.info('ACME service URL has changed, re-registering with new client key')
-            registration = None
+    try:
+        with open(registration_path) as f:
+            registration = messages.RegistrationResource.json_loads(f.read())
+            log.debug('Loaded registration %s', registration_path)
+            acme_url = urllib.parse.urlparse(directory_url)
+            reg_url = urllib.parse.urlparse(registration.uri)
+            if (acme_url[0] != reg_url[0]) or (acme_url[1] != reg_url[1]):
+                log.info('ACME service URL has changed, re-registering with new client key')
+                registration = None
+    except FileNotFoundError:
+        pass
 
     ops = []
 

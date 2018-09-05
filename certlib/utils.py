@@ -70,9 +70,11 @@ class WriteOperation(Operation):
 
     def apply(self, archive_dir: Optional[str]):
         tmp_path = self.tmp_path(archive_dir)
-        with contextlib.suppress(FileExistsError):
+        try:
             os.makedirs(os.path.dirname(tmp_path), dirmode(self.mode or 0o700))
             self._rmdir = True
+        except FileExistsError:
+            pass
 
         # Move existing file out of the way
         try:
@@ -103,9 +105,11 @@ class WriteOperation(Operation):
         self._content = None
 
     def revert(self):
-        with contextlib.suppress(FileNotFoundError):
+        try:
             os.remove(self.file_path)
             log.debug('%s removed', self.file_path)
+        except FileNotFoundError:
+            pass
 
         if self._tmp_path:
             os.rename(self._tmp_path, self.file_path)
@@ -114,12 +118,16 @@ class WriteOperation(Operation):
 
     def cleanup(self):
         if self._tmp_path:
-            with contextlib.suppress(FileNotFoundError):
+            try:
                 os.remove(self._tmp_path)
+            except FileNotFoundError:
+                pass
 
             if self._rmdir:
-                with contextlib.suppress(FileNotFoundError, OSError):
+                try:
                     os.removedirs(os.path.dirname(self._tmp_path))
+                except (FileNotFoundError, OSError):
+                    pass
 
             self._tmp_path = None
 

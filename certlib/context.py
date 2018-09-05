@@ -1,4 +1,3 @@
-import contextlib
 import datetime
 import os
 import re
@@ -357,15 +356,20 @@ class CertificateContext:
 
         pem_data = None
         param_file_path = self.params_path
-        with contextlib.suppress(FileNotFoundError):
+        try:
             with open(param_file_path, 'rb') as f:
                 pem_data = f.read()
+        except FileNotFoundError:
+            pass
 
         if not pem_data:
             for item in self:
                 certificate_file_path = item.certificate_path()
-                with contextlib.suppress(FileNotFoundError), open(certificate_file_path, 'rb') as f:
-                    pem_data = f.read()
+                try:
+                    with open(certificate_file_path, 'rb') as f:
+                        pem_data = f.read()
+                except FileNotFoundError:
+                    pass
                 break
             else:
                 return
