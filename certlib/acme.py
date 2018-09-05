@@ -1,11 +1,10 @@
-import contextlib
 import datetime
 import json
 import os
 import sys
 import time
 import urllib
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, List, Optional, Union
 from urllib import parse
 
 import collections
@@ -149,30 +148,30 @@ def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: s
 
 def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Union[str, Callable[[str], str]], acme_client: client.ClientV2,
                           retry: int, delay: int, hooks: Hooks) -> List[messages.AuthorizationResource]:
-    authorizations = []
-    authorization_resources = {}
+    valid_authzr = []
+    pending_authzr = []
 
     # collect pending auth resources
     for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
         domain_name = authorization_resource.body.identifier.value
         if messages.STATUS_VALID == authorization_resource.body.status:
             log.debug('Domain "%s" already authorized', domain_name)
-            authorizations.append(authorization_resource)
+            valid_authzr.append(authorization_resource)
         elif messages.STATUS_PENDING == authorization_resource.body.status:
             log.progress('Requesting authorization for domain "%s"', domain_name)
-            authorization_resources[domain_name] = authorization_resource
+            pending_authzr.append(authorization_resource)
         else:
             log.raise_error('Unexpected status "%s" for authorization of %s', authorization_resource.body.status, domain_name)
 
     # All auth where already valid, nothing to do
-    if not authorization_resources:
-        return authorizations
+    if not pending_authzr:
+        return valid_authzr
 
     # Setup challenge responses
     challenge_http_responses = {}
-    for domain_name, authorization_resource in authorization_resources.items():
-        identifier = authorization_resource.body.identifier.value
-        http_challenge_directory = http_challenge_dir(identifier) if callable(http_challenge_dir) else http_challenge_dir  # type: str
+    for authorization_resource in pending_authzr:
+        domain_name = authorization_resource.body.identifier.value
+        http_challenge_directory = http_challenge_dir(domain_name) if callable(http_challenge_dir) else http_challenge_dir  # type: str
         if not http_challenge_directory:
             log.raise_error("[%s] no http_challenge_directory directory specified", domain_name)
         challenge = _get_challenge(authorization_resource, 'http-01')
@@ -196,7 +195,7 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
     try:
         hooks.call()
         # Process authorizations
-        authorizations += _get_authorizations(acme_client, authorization_resources, retry, delay)
+        valid_authzr += _get_authorizations(acme_client, pending_authzr, retry, delay)
     except Exception:
         for challenge_file in challenge_http_responses.values():
             os.remove(challenge_file)
@@ -209,16 +208,18 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
         hooks.add('clear_http_challenge', domain=domain_name, file=challenge_file)
     hooks.call()
 
-    return authorizations
+    order.update(authorizations=valid_authzr)
+    return valid_authzr
 
 
-AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'domain_name', 'authorization_resource'])
+AuthorizationTuple = collections.namedtuple('AuthorizationTuple', ['datetime', 'authorization_resource'])
 
 
-def _get_authorizations(acme_client: client.ClientV2, authorization_resources: Dict[str, messages.AuthorizationResource],
+def _get_authorizations(acme_client: client.ClientV2, authorization_resources: List[messages.AuthorizationResource],
                         retry: int, delay: int) -> List[messages.AuthorizationResource]:
     # answer challenges
-    for domain_name, authorization_resource in authorization_resources.items():
+    for authorization_resource in authorization_resources:
+        domain_name = authorization_resource.body.identifier.value
         with log.prefix("  [{}] ".format(domain_name)):
             challenge = _get_challenge(authorization_resource, 'http-01')
             try:
@@ -228,12 +229,12 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
                 log.raise_error('Error answering challenge', cause=e)
 
     # poll for authorizations
-    authorizations = []
-    waiting = [AuthorizationTuple(datetime.datetime.now(), domain_name, authorization_resource)
-               for domain_name, authorization_resource in authorization_resources.items()]
-    attempts = collections.defaultdict(int)
-    while waiting:
-        when, domain_name, authorization_resource = waiting.pop(0)
+    valid_authzr = []
+    retry_counters = collections.defaultdict(int)
+    pending_authzr = [AuthorizationTuple(datetime.datetime.now(), authorization_resource) for authorization_resource in authorization_resources]
+    while pending_authzr:
+        when, authorization_resource = pending_authzr.pop(0)
+        domain_name = authorization_resource.body.identifier.value
         with log.prefix("  [{}] ".format(domain_name)):
             now = datetime.datetime.now()
             if now < when:
@@ -245,27 +246,27 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: D
                 authorization_resource, response = acme_client.poll(authorization_resource)
                 if 200 != response.status_code:
                     log.warning('%s while waiting for domain challenge', response)
-                    waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
+                    pending_authzr.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), authorization_resource))
                     continue
             except Exception as e:
                 log.raise_error('Error polling for authorization', cause=e)
                 assert False  # help type checker
 
-            attempts[authorization_resource] += 1
+            retry_counters[authorization_resource] += 1
             if messages.STATUS_VALID == authorization_resource.body.status:
-                authorizations.append(authorization_resource)
+                valid_authzr.append(authorization_resource)
                 log.progress('Domain authorized')
                 continue
             elif messages.STATUS_INVALID == authorization_resource.body.status:
                 e = _get_challenge(authorization_resource, 'http-01').error
                 log.raise_error('Authorization failed : %s', e.detail if e else 'Unknown error')
             elif messages.STATUS_PENDING == authorization_resource.body.status:
-                if attempts[authorization_resource] > retry:
+                if retry_counters[authorization_resource] > retry:
                     log.debug('Max retry reached')
                     log.raise_error('Authorization timed out')
                 else:
                     log.debug('Retrying')
-                    waiting.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), domain_name, authorization_resource))
+                    pending_authzr.append(AuthorizationTuple(acme_client.retry_after(response, default=delay), authorization_resource))
             else:
                 log.raise_error('Unexpected authorization status "%s"', authorization_resource.body.status)
-    return authorizations
+    return valid_authzr

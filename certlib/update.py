@@ -114,14 +114,16 @@ class UpdateAction(Action):
 
                     log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.alt_names))
                     csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
-                    order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
                     if self.args.no_auth:
+                        order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))  # type: messages.OrderResource
                         for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
                             status = authorization_resource.body.status
                             domain_name = authorization_resource.body.identifier.value
                             if messages.STATUS_VALID != status:
                                 log.raise_error('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
                     else:
+                        # FIXME: defere order creation as we may want to delegate the auth to an external host and only then query the order status
+                        order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
                         handle_authorizations(order, self.config.http_challenge_directory, self.acme_client,
                                               self.config.int('max_authorization_attempts'), self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
