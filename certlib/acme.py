@@ -155,7 +155,7 @@ def handle_authorizations(order: messages.OrderResource, http_challenge_dir: Uni
     for authorization_resource in order.authorizations:  # type: messages.AuthorizationResource
         domain_name = authorization_resource.body.identifier.value
         if messages.STATUS_VALID == authorization_resource.body.status:
-            log.debug('Domain "%s" already authorized', domain_name)
+            log.debug('Domain "%s" already authorized (until %s)', domain_name, authorization_resource.body.expires)
             valid_authzr.append(authorization_resource)
         elif messages.STATUS_PENDING == authorization_resource.body.status:
             log.progress('Requesting authorization for domain "%s"', domain_name)
@@ -255,7 +255,7 @@ def _get_authorizations(acme_client: client.ClientV2, authorization_resources: L
             retry_counters[authorization_resource] += 1
             if messages.STATUS_VALID == authorization_resource.body.status:
                 valid_authzr.append(authorization_resource)
-                log.progress('Domain authorized')
+                log.progress('Domain authorized (until %)', authorization_resource.body.expires)
                 continue
             elif messages.STATUS_INVALID == authorization_resource.body.status:
                 e = _get_challenge(authorization_resource, 'http-01').error
