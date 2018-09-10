@@ -6,6 +6,7 @@ import logging
 import os
 import pwd
 from collections import OrderedDict
+from enum import Enum
 from typing import Container, Dict, Iterable, List, Optional, Union
 
 import collections
@@ -92,8 +93,8 @@ class VerifyDef:
     __slots__ = ('targets', 'ocsp_max_attempts', 'ocsp_retry_delay')
 
     def __init__(self, spec, defaults: 'VerifyDef' = None):
-        self.ocsp_max_attempts = defaults.ocsp_max_attempts if defaults else 10
-        self.ocsp_retry_delay = defaults.ocsp_retry_delay if defaults else 5
+        self.ocsp_max_attempts: int = defaults.ocsp_max_attempts if defaults else 10
+        self.ocsp_retry_delay: int = defaults.ocsp_retry_delay if defaults else 5
         if isinstance(spec, list):
             self.targets = [VerifyTarget(verify_spec) for verify_spec in spec]
         elif spec:
@@ -103,6 +104,76 @@ class VerifyDef:
             self.ocsp_retry_delay = _get_int(spec, 'ocsp_retry_delay', self.ocsp_retry_delay)
         else:
             self.targets = []
+
+
+class AuthType(Enum):
+    noop = 0
+    http = 1
+    hook = 2
+
+
+class AuthDef:
+    __slots__ = ('type',)
+
+    def __init__(self, ty: AuthType):
+        self.type: AuthType = ty
+
+    @staticmethod
+    def parse(spec, default=None) -> 'AuthDef':
+        if not spec:
+            return NoAuthDef()
+        ty = spec.get('type', None)
+        if not ty:
+            log.raise_error('auth: key type is required')
+        if ty == 'noop':
+            return NoAuthDef()
+        if ty == 'http':
+            return HttpAuthDef(spec, default if default and default.type == 'http' else None)
+        if ty == 'hook':
+            return HookAuthDef(spec, default if default and default.type == 'hook' else None)
+        log.raise_error('auth: key type must be one of "noop", "http" or "hook".')
+
+
+class NoAuthDef(AuthDef):
+
+    def __init__(self):
+        super().__init__(AuthType.noop)
+
+
+class HookAuthDef(AuthDef):
+
+    def __init__(self, spec, default=Optional['HookAuthDef']):
+        super().__init__(AuthType.hook)
+
+
+class HttpAuthDef(AuthDef):
+
+    def __init__(self, spec, default=Optional['HttpAuthDef']):
+        super().__init__(AuthType.http)
+        _check("auth:http", {'challenge_dir', 'delay', 'retry'}, spec)
+        challenge_dir = spec.get('challenge_dir', None)
+
+        # noinspection PyProtectedMember
+        self._challenge_dirs = dict(default._challenge_dirs) if default else {}
+        if isinstance(challenge_dir, dict):
+            # noinspection PyProtectedMember
+            self._default_dir = challenge_dir.pop('default', default._default_dir if default else None)
+            self._challenge_dirs.update(challenge_dir)
+        else:
+            self._default_dir = challenge_dir
+
+        self.delay: int = _get_int(spec, 'delay', default.delay if default else 10)
+        self.retry: int = _get_int(spec, 'retry', default.retry if default else 30)
+
+    def challenge_directory(self, domain: str) -> Optional[str]:
+        challenge_dir = self._challenge_dirs.get(domain)
+        if challenge_dir:
+            return challenge_dir
+
+        http_challenge_directory = self._default_dir
+        if http_challenge_directory and '{fqdn' in http_challenge_directory:
+            http_challenge_directory = http_challenge_directory.format(fqdn=domain)
+        return http_challenge_directory
 
 
 class PrivateKeyDef:
@@ -137,14 +208,13 @@ class PrivateKeyDef:
 class CertificateDef:
     SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
                           'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
-                          'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'file_user',
-                          'file_group') + PrivateKeyDef.SUPPORTED_KEYS)
+                          'ocsp_responder_urls', 'ct_submit_logs', 'file_user', 'file_group', 'auth', 'verify') + PrivateKeyDef.SUPPORTED_KEYS)
 
     __slots__ = ('common_name', 'private_key', 'alt_names',
                  'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
-                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'verify', 'no_link')
+                 'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'auth', 'verify', 'no_link')
 
-    def __init__(self, spec: dict, defaults, verify: Optional[VerifyDef], ct_logs):
+    def __init__(self, spec: dict, defaults, auth: Optional[AuthDef], verify: Optional[VerifyDef], ct_logs):
         self.common_name = spec['name'].strip().lower()
 
         with log.prefix("[{}] ".format(self.common_name)):
@@ -180,6 +250,10 @@ class CertificateDef:
                 else:
                     log.warning("undefined ct_log '%s'", ct_log_name)
 
+            if 'auth' in spec:
+                self.auth = AuthDef.parse(spec.get('auth'), auth)
+            else:
+                self.auth = auth
             self.verify = VerifyDef(spec.get('verify'), verify)
             self.no_link = set()
 
@@ -330,16 +404,15 @@ class Configuration:
                     _merge('ct_logs', sct_logs, values, check=False)
                 elif section == 'certificates':
                     pass
-                elif section == 'http_challenges':
-                    cfg._http_challenges = values
                 else:
                     log.warning('unknown section name: "%s"', section)
 
+            auth = AuthDef.parse(cfg.settings['auth'])
             verify = VerifyDef(cfg.settings['verify'])
             certificates = data.get('certificates')
             if not certificates:
                 log.raise_error('section "certificates" is required and must not be empty.')
-            cfg._parse_certificates(certificates, verify, sct_logs)
+            cfg._parse_certificates(certificates, auth, verify, sct_logs)
 
         return cfg
 
@@ -350,11 +423,7 @@ class Configuration:
         self.settings = {
             'data_dir': '/etc/certmgr',
 
-            # auth
-            'http_challenge_dir': None,
-            'max_authorization_attempts': 30,
-            'authorization_delay': 10,
-
+            'auth': None,
             'color_output': True,
             'log_level': 'info',
             'log_file': '/var/log/certmgr/certmgr.log',
@@ -403,7 +472,6 @@ class Configuration:
         }
 
         self._certificates = OrderedDict()  # type: Dict[str, CertificateDef]
-        self._http_challenges = {}
 
     def get(self, item: str, default=None):
         return self.settings.get(item, default)
@@ -450,22 +518,12 @@ class Configuration:
         date = datetime.datetime.now().strftime('%Y_%m_%d_%H%M%S')
         return os.path.join(archive, name, date)
 
-    def http_challenge_directory(self, domain_name: str) -> Optional[str]:
-        challenge_dir = self._http_challenges.get(domain_name)
-        if challenge_dir:
-            return challenge_dir
-
-        http_challenge_directory = self.get('http_challenge_dir')
-        if http_challenge_directory and '{' in http_challenge_directory:
-            http_challenge_directory = http_challenge_directory.format(fqdn=domain_name)
-        return http_challenge_directory
-
-    def _parse_certificates(self, certificates: List[dict], verify: Optional[VerifyDef], sct_logs: dict):
+    def _parse_certificates(self, certificates: List[dict], auth: AuthDef, verify: Optional[VerifyDef], sct_logs: dict):
         common_names = set()
         alt_names = {}
         for certificate_spec in certificates:
             assert isinstance(certificate_spec, dict), "'certificates' must be a list of objects"
-            cert = CertificateDef(certificate_spec, self.settings, verify, sct_logs)
+            cert = CertificateDef(certificate_spec, self.settings, auth, verify, sct_logs)
             if cert.common_name in common_names:
                 log.raise_error("duplicated common name in certificates definition: %s", cert.common_name)
             common_names.add(cert.common_name)
@@ -509,7 +567,7 @@ class Configuration:
     def _merge_settings(self, values):
         _merge('settings', self.settings, values)
         basedir = os.path.dirname(self.path)
-        for file in ('log_file', 'lock_file', 'data_dir', 'http_challenge_dir'):
+        for file in ('log_file', 'lock_file', 'data_dir'):
             value = self.get(file)
             if value and not os.path.isabs(value):
                 self.settings[file] = os.path.join(basedir, value)

@@ -1,15 +1,25 @@
 # SCT Support
 import base64
-from typing import List
+from typing import List, NamedTuple, Optional
 
-import collections
 import requests
 
 from .crypto import Certificate
 from .logging import log
 
-SCTLog = collections.namedtuple('SCTLog', ('name', 'id', 'url'))
-SCTData = collections.namedtuple('SCTData', ['version', 'id', 'timestamp', 'extensions', 'signature'])
+
+class SCTLog(NamedTuple):
+    name: str
+    id: int
+    url: str
+
+
+class SCTData(NamedTuple):
+    version: int
+    id: bytes
+    timestamp: int
+    extensions: bytes
+    signature: Optional[bytes]
 
 
 def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]) -> SCTData:

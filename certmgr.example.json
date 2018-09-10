@@ -116,6 +116,10 @@
       "ocsp_must_staple": false,
       "ocsp_responder_urls": [ "http://ocsp.int-x3.letsencrypt.org" ],
       "ct_submit_logs": [ "google_icarus", "google_pilot" ],
+      "auth": {
+        "type": "http",
+        "challenge_dir": "/var/www/{fqdn}/acme/",
+      },
       "verify": [
         443,
         {

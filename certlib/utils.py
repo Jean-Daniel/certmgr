@@ -8,15 +8,17 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import AnyStr, Dict, List
+from typing import AnyStr, Dict, List, NamedTuple
 from typing import Iterable, Optional
-
-import collections
 
 from .logging import log
 
+
 # ========= File System
-FileOwner = collections.namedtuple('FileOwner', ('uid', 'gid', 'is_self'))
+class FileOwner(NamedTuple):
+    uid: int
+    gid: int
+    is_self: bool
 
 
 def dirmode(mode: int) -> int:
@@ -264,7 +266,9 @@ class Hooks:
 
 
 # ======== Miscs
-KeyCipherData = collections.namedtuple('KeyCipherData', ['passphrase', 'forced'])
+class KeyCipherData(NamedTuple):
+    passphrase: str
+    forced: bool
 
 
 def get_key_cipher(name, passphrase, force_prompt) -> Optional[KeyCipherData]:

@@ -2,7 +2,7 @@ import contextlib
 import logging
 import sys
 import traceback
-from typing import Optional
+from typing import Optional, NoReturn
 
 from certlib import AcmeError
 
@@ -178,7 +178,7 @@ class _Logger(logging.LoggerAdapter):
         if print_exc and self.isEnabledFor(logging.DEBUG):
             traceback.print_exc()
 
-    def raise_error(self, msg, *args, cause=None, **kwargs):  # python 3.6 -> NoReturn:
+    def raise_error(self, msg, *args, cause=None, **kwargs) -> NoReturn:
         self.critical(msg, *args, **kwargs)
         if args:
             msg = msg % args

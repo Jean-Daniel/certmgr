@@ -10,9 +10,8 @@ from typing import List, Optional
 import OpenSSL
 import josepy
 from acme import client
-from cryptography.hazmat.primitives import serialization
 
-from .acme import handle_authorizations
+from certlib.auth import authorize
 from .config import Configuration
 from .context import CertificateContext
 from .context import CertificateItem
@@ -111,7 +110,7 @@ class CheckAction(Action):
                 os.chown(file, owner.uid, owner.gid)
         except FileNotFoundError:
             pass
-        
+
     def _check_file(self, file: str, mode: int, owner: FileOwner):
         self._check(file, mode, owner)
         # As dir path may contains variables, it can be different for each certificate item
@@ -255,13 +254,9 @@ class AuthAction(Action):
             # until acme provide a clean way to create an order without using a CSR, we just create a dummy CSR …
             key = PrivateKey.create('rsa', 2048)
             csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
-            order = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
             # … and remove it from the order afterward
+            order = authorize(csr, context, self.acme_client, Hooks(self.config.hooks))
             order.update(csr_pem=None)
-
-            handle_authorizations(order, self.config.http_challenge_directory, self.acme_client,
-                                  self.config.int('max_authorization_attempts'),
-                                  self.config.int('authorization_delay'), Hooks(self.config.hooks))
 
 
 class VerifyAction(Action):

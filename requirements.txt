@@ -1,4 +1,4 @@
-acme==0.26.1
+acme==0.27.1
 josepy==1.1.0
 pyOpenSSL==18.0.0
 
