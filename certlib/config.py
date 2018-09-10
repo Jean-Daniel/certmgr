@@ -144,6 +144,10 @@ class HookAuthDef(AuthDef):
 
     def __init__(self, spec, default=Optional['HookAuthDef']):
         super().__init__(AuthType.hook)
+        cmd = spec.get('command')
+        if not cmd:
+            log.raise_error('auth: hook auth requires a command.')
+        self.cmd = Hook('auth', cmd)
 
 
 class HttpAuthDef(AuthDef):

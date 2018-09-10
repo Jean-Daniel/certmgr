@@ -201,7 +201,7 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
 
 # ======= Hooks Management
 class Hook:
-    __slots__ = ('name', 'args', 'cwd')
+    __slots__ = ('name', 'args', 'cwd', 'timeout')
 
     def __init__(self, name, spec):
         self.name = name
@@ -218,13 +218,13 @@ class Hook:
         if not self.args:
             log.raise_error("[hook:%s] arguments must not be empty", name)
 
-    def execute(self, **kwargs):
+    def execute(self, **kwargs) -> bool:
         args = None
         try:
             args = [arg.format(**kwargs) for arg in self.args]
             log.progress('Calling hook %s: %s', self.name, args)
             # TODO: add support for env, …
-            output = subprocess.check_output(args, cwd=self.cwd, stderr=subprocess.STDOUT, shell=False)
+            output = subprocess.check_output(args, cwd=self.cwd, stderr=subprocess.STDOUT, shell=False, timeout=self.timeout)
             if output:
                 try:
                     output = output.decode('utf-8')
@@ -233,12 +233,16 @@ class Hook:
                 log.info("> %s", output)
             else:
                 log.info("  OK")
+            return True
         except KeyError as e:
             log.warning('Invalid hook specification for "%s": unknown key {%s}', self.name, e)
         except subprocess.CalledProcessError as e:
             log.warning('Hook %s returned error, code: %s:\n%s', self.name, e.returncode, e.output)
+        except TimeoutError as e:
+            log.warning("Timeout waiting Hook %s execution.")
         except Exception as e:
             log.warning('Failed to call hook %s (%s): %s', self.name, args, str(e))
+        return False
 
 
 class Hooks:
