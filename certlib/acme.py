@@ -1,13 +1,10 @@
-import datetime
 import json
 import os
 import sys
-import time
 import urllib
-from typing import Callable, List, Optional, Union
+from typing import Optional
 from urllib import parse
 
-import collections
 import josepy
 import pkg_resources
 from acme import client, messages
@@ -15,8 +12,7 @@ from acme import client, messages
 from . import VERSION
 from .crypto import PrivateKey
 from .logging import log
-from .utils import (ArchiveAndWriteOperation, ArchiveOperation, Hooks,
-                    WriteOperation, commit_file_transactions, get_key_cipher)
+from .utils import (ArchiveAndWriteOperation, ArchiveOperation, WriteOperation, commit_file_transactions, get_key_cipher)
 
 
 def _user_agent():
@@ -106,6 +102,8 @@ def connect_client(account_dir: str, account: str, directory_url: str, passphras
         acme_client = client.ClientV2(directory, net)
     except Exception as e:
         log.raise_error("Can't connect to ACME service", cause=e)
+        # workaround lacks of NoReturn support in linter
+        assert False
 
     if not registration:
         log.progress('Registering client')
@@ -137,6 +135,3 @@ def connect_client(account_dir: str, account: str, directory_url: str, passphras
         commit_file_transactions(ops, archive_dir)
 
     return acme_client
-
-
-

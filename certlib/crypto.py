@@ -1,11 +1,10 @@
 import abc
-import contextlib
 import hashlib
 import re
 import subprocess
 from datetime import datetime
 from io import BytesIO
-from typing import Callable, Iterable, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Type, TypeVar, Union
 
 import requests
 from cryptography import x509
@@ -16,12 +15,16 @@ from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
 
 from .logging import log
 
-# FIXME: should be dynamic ?
-_SUPPORTED_CURVES = {
-    'secp256r1': ec.SECP256R1(),
-    'secp384r1': ec.SECP384R1(),
-    'secp521r1': ec.SECP521R1(),
-}
+C = TypeVar('C', bound=ec.EllipticCurve, covariant=True)
+
+__supported_curves = None
+
+
+def _supported_curves() -> Dict[str, Type[C]]:
+    global __supported_curves
+    if __supported_curves is None:
+        __supported_curves = {cls.name: cls for _, cls in ec.__dict__.items() if isinstance(cls, type) and cls is not ec.EllipticCurve and issubclass(cls, ec.EllipticCurve)}
+    return __supported_curves
 
 
 class PrivateKey(metaclass=abc.ABCMeta):
@@ -81,10 +84,9 @@ class PrivateKey(metaclass=abc.ABCMeta):
             return _RSAKey(rsa.generate_private_key(65537, params, default_backend()))
         if 'ecdsa' == key_type:
             assert isinstance(params, str)
-            curve = _SUPPORTED_CURVES.get(params)
+            curve = _supported_curves().get(params)
             if not curve:
                 raise NotImplementedError('Unsupported key curve: ' + params)
-
             return _ECDSAKey(ec.generate_private_key(curve, default_backend()))
         raise NotImplementedError('Unsupported key type ' + key_type.upper())
 

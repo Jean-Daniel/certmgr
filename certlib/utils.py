@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import AnyStr, Dict, List, NamedTuple
+from typing import AnyStr, Dict, List, NamedTuple, Tuple
 from typing import Iterable, Optional
 
 from .logging import log
@@ -46,7 +46,7 @@ class Operation(metaclass=abc.ABCMeta):
 
 
 class WriteOperation(Operation):
-    __slots__ = ['file_path', 'mode', 'owner', '_content', '_tmp_path', '_rmdir']
+    __slots__ = ('file_path', 'mode', 'owner', '_content', '_tmp_path', '_rmdir')
 
     def __init__(self, file_path: str, mode: int, owner: Optional[FileOwner] = None):
         self.file_path = file_path
@@ -135,7 +135,7 @@ class WriteOperation(Operation):
 
 
 class ArchiveAndWriteOperation(WriteOperation):
-    __slots__ = ['file_type', '_archived']
+    __slots__ = ('file_type', '_archived')
 
     def __init__(self, file_type: str, file_path: str, mode: int, owner: Optional[FileOwner] = None):
         super().__init__(file_path, mode, owner)
@@ -206,11 +206,13 @@ class Hook:
     def __init__(self, name, spec):
         self.name = name
         self.cwd = None
+        self.timeout = None
         if isinstance(spec, str):
             self.args = shlex.split(spec)
         elif isinstance(spec, dict):
             self.args = spec.get('args')
             self.cwd = spec.get('cwd')
+            self.timeout = spec.get('timeout', None)
             # TODO: add support for env, …
         else:
             log.raise_error("[hook:%s] hook must be either a command line string, or a dictionary", name)
@@ -246,12 +248,14 @@ class Hook:
 
 
 class Hooks:
+    __slots__ = ('_hooks', '_commands')
 
     def __init__(self, commands: Dict[str, Optional[List[Hook]]]):
-        self._hooks = []
-        self._commands = commands  # type: Dict[str, Optional[List[Hook]]]
+        self._hooks: List[Tuple[List[Hook], Dict[str, str]]] = []
+        self._commands: Dict[str, Optional[List[Hook]]] = commands
 
-    # Hook Management
+        # Hook Management
+
     def add(self, hook_name: str, **kwargs):
         hooks = self._commands[hook_name]
         if not hooks:
@@ -271,7 +275,7 @@ class Hooks:
 
 # ======== Miscs
 class KeyCipherData(NamedTuple):
-    passphrase: str
+    passphrase: bytes
     forced: bool
 
 

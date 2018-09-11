@@ -122,7 +122,7 @@ class AuthDef:
     def parse(spec, default=None) -> 'AuthDef':
         if not spec:
             return NoAuthDef()
-        ty = spec.get('type', None)
+        ty = spec.pop('type', None)
         if not ty:
             log.raise_error('auth: key type is required')
         if ty == 'noop':
@@ -538,13 +538,13 @@ class Configuration:
 
                 if host_name in common_names:
                     log.info(
-                        "alt name %s in certificate %s conflict with existing certificate. Link will not be generated",
+                        "alt name %s in certificate %s conflicts with existing certificate. Link will not be generated",
                         host_name, cert.common_name)
                     cert.no_link.add(host_name)
                 elif host_name in alt_names:
                     existing = alt_names[host_name]
                     log.info(
-                        "alt name %s in certificate %s conflict with alt name in certificate %s."
+                        "alt name %s in certificate %s conflicts with alt name in certificate %s."
                         " Link will not be generated", host_name, cert.common_name, existing.common_name)
                     existing.no_link.add(host_name)
                     cert.no_link.add(host_name)

@@ -115,7 +115,7 @@ class UpdateAction(Action):
                     log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.alt_names))
                     csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
                     if self.args.no_auth:
-                        order = authorize_noop(self.acme_client, csr)
+                        order = authorize_noop(csr, self.acme_client)
                     else:
                         order = authorize(csr, context, self.acme_client, Hooks(self.config.hooks))
 

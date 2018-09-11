@@ -8,7 +8,7 @@ from acme import client, messages
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from certlib.config import HttpAuthDef
+from certlib.config import HttpAuthDef, HookAuthDef
 from .config import AuthType
 from .context import CertificateContext
 from .logging import log
@@ -22,7 +22,7 @@ def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: s
     return None
 
 
-def authorize_noop(acme_client, csr: x509.CertificateSigningRequest) -> messages.OrderResource:
+def authorize_noop(csr: x509.CertificateSigningRequest, acme_client) -> messages.OrderResource:
     order = acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))  # type: messages.OrderResource
     for authzr in order.authorizations:  # type: messages.AuthorizationResource
         status = authzr.body.status
@@ -166,15 +166,17 @@ def _get_authorizations(acme_client: client.ClientV2, authzrs: List[messages.Aut
 
 
 def authorize_hook(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
-    # TODO: execute hook
-    return authorize_noop(acme_client)
+    auth: HookAuthDef = context.config.auth
+    # TODO: tweak argument list
+    auth.cmd.execute(common_name=context.common_name)
+    return authorize_noop(csr, acme_client)
 
 
 def authorize(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
     auth = context.config.auth
     if auth.type == AuthType.noop:
-        return authorize_noop(acme_client, csr)
+        return authorize_noop(csr, acme_client)
     elif auth.type == AuthType.http:
         return authorize_http(csr, context, acme_client, hooks)
     elif auth.type == AuthType.hook:
-        return authorize_hook(csr, context, hooks)
+        return authorize_hook(csr, context, acme_client, hooks)
