@@ -148,7 +148,7 @@ def _get_authorizations(acme_client: client.ClientV2, authzrs: List[messages.Aut
             retry_counters[domain_name] += 1
             if messages.STATUS_VALID == authzr.body.status:
                 valid_authzr.append(authzr)
-                log.progress('Domain authorized (until %)', authzr.body.expires)
+                log.progress('Domain authorized (until %s)', authzr.body.expires)
                 continue
             elif messages.STATUS_INVALID == authzr.body.status:
                 e = _get_challenge(authzr, 'http-01').error
