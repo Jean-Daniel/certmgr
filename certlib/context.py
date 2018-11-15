@@ -377,9 +377,9 @@ class CertificateContext:
         if not pem_data:
             return
 
-        match = re.match(br'.*(-----BEGIN DH PARAMETERS-----.*-----END DH PARAMETERS-----)', pem_data, re.DOTALL)
+        match = re.search(br'(-----BEGIN DH PARAMETERS-----.*-----END DH PARAMETERS-----)', pem_data, re.DOTALL)
         dhparam_pem = (match.group(1) + b'\n') if match else None
-        match = re.match(br'.*(-----BEGIN EC PARAMETERS-----.*-----END EC PARAMETERS-----)', pem_data, re.DOTALL)
+        match = re.search(br'(-----BEGIN EC PARAMETERS-----.*-----END EC PARAMETERS-----)', pem_data, re.DOTALL)
         ecparam_pem = (match.group(1) + b'\n') if match else None
         if dhparam_pem and not check_dhparam(dhparam_pem):
             dhparam_pem = None

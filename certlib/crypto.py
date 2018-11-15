@@ -334,7 +334,7 @@ def check_ecparam(ecparam_pem: bytes) -> bool:
 def get_dhparam_size(dhparam_pem: bytes) -> int:
     assert dhparam_pem
     output = subprocess.check_output(['openssl', 'dhparam', '-text'], input=dhparam_pem, stderr=subprocess.DEVNULL)
-    match = re.match(r'\s*(?:PKCS#3)?\s*DH Parameters: \(([0-9]+) bit\)\n', output.decode('ascii'))
+    match = re.search(r'DH Parameters: \(([0-9]+) bit\)', output.decode('ascii'))
     if match:
         return int(match.group(1))
     log.raise_error("dhparam size extraction failed: %s", output.decode('ascii'))
@@ -343,7 +343,7 @@ def get_dhparam_size(dhparam_pem: bytes) -> int:
 def get_ecparam_curve(ecparam_pem: bytes) -> str:
     assert ecparam_pem
     output = subprocess.check_output(['openssl', 'ecparam', '-text'], input=ecparam_pem, stderr=subprocess.DEVNULL)
-    match = re.match(r'ASN1 OID: ([^\s]+)\n', output.decode('ascii'))
+    match = re.search(r'ASN1 OID: ([^\s]+)\n', output.decode('ascii'))
     if match:
         return match.group(1)
     log.raise_error("ecparam size extraction failed: %s", output.decode('ascii'))
