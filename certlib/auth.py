@@ -1,44 +1,31 @@
+import collections
 import datetime
 import os
 import time
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional, Type
 
-import collections
-from acme import client, messages
+from acme import challenges, client, messages
+from acme.challenges import DNS01
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from certlib.config import HttpAuthDef, HookAuthDef
+from certlib.config import DnsAuthDef, HookAuthDef, HttpAuthDef, TsigKey
 from .config import AuthType
 from .context import CertificateContext
 from .logging import log
 from .utils import Hooks
 
 
-def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: str) -> Optional[messages.ChallengeBody]:
-    for challenge in authorization_resource.body.challenges:
-        if ty == challenge.typ:
-            return challenge
-    return None
+class AuthDriver:
+    def authorize(self, authzrs: List[messages.AuthorizationResource], acme_client: client.ClientV2, hooks: Hooks) -> List[messages.AuthorizationResource]:
+        raise NotImplementedError()
 
 
-def authorize_noop(csr: x509.CertificateSigningRequest, acme_client) -> messages.OrderResource:
-    order = acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))  # type: messages.OrderResource
-    for authzr in order.authorizations:  # type: messages.AuthorizationResource
-        status = authzr.body.status
-        domain_name = authzr.body.identifier.value
-        if status != messages.STATUS_VALID:
-            log.raise_error('Domain "%s" not authorized and auth disabled (status: %s)', domain_name, status)
-    return order
-
-
-def authorize_http(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
-    auth: HttpAuthDef = context.config.auth
-    order: messages.OrderResource = acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
-
+def _authorize(driver: AuthDriver, csr: x509.CertificateSigningRequest, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
     valid_authzr: List[messages.AuthorizationResource] = []
     pending_authzr: List[messages.AuthorizationResource] = []
 
+    order: messages.OrderResource = acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
     # collect pending auth resources
     for authzr in order.authorizations:  # type: messages.AuthorizationResource
         domain_name = authzr.body.identifier.value
@@ -56,47 +43,7 @@ def authorize_http(csr: x509.CertificateSigningRequest, context: CertificateCont
         return order
 
     # Setup challenge responses
-    challenge_http_responses = {}
-    for authzr in pending_authzr:
-        domain_name = authzr.body.identifier.value
-        http_challenge_directory = auth.challenge_directory(domain_name)
-        if not http_challenge_directory:
-            log.raise_error("[%s] no http challenge directory specified", domain_name)
-        challenge = _get_challenge(authzr, 'http-01')
-        if not challenge:
-            log.raise_error('[%s] Unsupported http-01 challenge', domain_name)
-        challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
-        log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
-        try:
-            os.makedirs(os.path.dirname(challenge_file_path), 0o755, exist_ok=True)
-            with open(challenge_file_path, 'w') as f:
-                f.write(challenge.validation(acme_client.net.key))
-                os.fchmod(f.fileno(), 0o644)
-
-            challenge_http_responses[domain_name] = challenge_file_path
-            hooks.add('set_http_challenge', domain=domain_name, file=challenge_file_path)
-        except Exception as e:
-            # remove already saved challenges
-            for challenge_file in challenge_http_responses.values():
-                # FIXME: ignore error ?
-                os.remove(challenge_file)
-            log.raise_error('[%s] Unable to create acme-challenge file "%s"', domain_name, challenge_file_path, cause=e)
-    try:
-        hooks.call()
-        # Process authorizations
-        valid_authzr += _get_authorizations(acme_client, pending_authzr, auth.retry, auth.delay)
-    except Exception:
-        for challenge_file in challenge_http_responses.values():
-            # FIXME: ignore error ?
-            os.remove(challenge_file)
-        raise
-
-    # Cleanup challenges
-    for domain_name, challenge_file in challenge_http_responses.items():
-        log.debug('Removing http acme-challenge for %s', domain_name)
-        os.remove(challenge_file)
-        hooks.add('clear_http_challenge', domain=domain_name, file=challenge_file)
-    hooks.call()
+    valid_authzr += driver.authorize(pending_authzr, acme_client, hooks)
 
     # Not required, but better be a good citizen
     order.update(authorizations=valid_authzr)
@@ -109,12 +56,19 @@ class AuthorizationTuple(NamedTuple):
     authorization_resource: messages.AuthorizationResource
 
 
-def _get_authorizations(acme_client: client.ClientV2, authzrs: List[messages.AuthorizationResource], retry: int, delay: int):
+def _get_challenge(authorization_resource: messages.AuthorizationResource, ty: str) -> Optional[Type[challenges.KeyAuthorizationChallenge]]:
+    for challenge in authorization_resource.body.challenges:
+        if ty == challenge.typ:
+            return challenge.chall
+    return None
+
+
+def _get_authorizations(acme_client: client.ClientV2, authzrs: List[messages.AuthorizationResource], retry: int, delay: int, challenge_type: str):
     # answer challenges
     for authzr in authzrs:
         domain_name = authzr.body.identifier.value
         with log.prefix("  [{}] ".format(domain_name)):
-            challenge = _get_challenge(authzr, 'http-01')
+            challenge = _get_challenge(authzr, challenge_type)
             try:
                 log.debug('Answering challenge')
                 acme_client.answer_challenge(challenge, challenge.response(acme_client.net.key))
@@ -165,18 +119,189 @@ def _get_authorizations(acme_client: client.ClientV2, authzrs: List[messages.Aut
     return valid_authzr
 
 
+# -------- Noop Auth
+
+class NoopAuthDriver(AuthDriver):
+    def authorize(self, authzrs: List[messages.AuthorizationResource], acme_client: client.ClientV2, hooks: Hooks):
+        log.raise_error('Soem domains requires auth but auth is disabled')
+
+
+def authorize_noop(csr: x509.CertificateSigningRequest, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+    return _authorize(NoopAuthDriver(), csr, acme_client, hooks)
+
+
+# -------- HTTP Auth
+class HttpAuthDriver(AuthDriver):
+    def __init__(self, auth: HttpAuthDef):
+        self.auth = auth
+        self.challenge_http_responses = {}
+
+    def authorize(self, authzrs: List[messages.AuthorizationResource], acme_client: client.ClientV2, hooks: Hooks):
+        for authzr in authzrs:
+            domain_name = authzr.body.identifier.value
+            http_challenge_directory = self.auth.challenge_directory(domain_name)
+            if not http_challenge_directory:
+                log.raise_error("[%s] no http challenge directory specified", domain_name)
+            challenge = _get_challenge(authzr, 'http-01')
+            if not challenge:
+                log.raise_error('[%s] Unsupported http-01 challenge', domain_name)
+            challenge_file_path = os.path.join(http_challenge_directory, challenge.encode('token'))
+            log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
+            try:
+                os.makedirs(os.path.dirname(challenge_file_path), 0o755, exist_ok=True)
+                with open(challenge_file_path, 'w') as f:
+                    f.write(challenge.validation(acme_client.net.key))
+                    os.fchmod(f.fileno(), 0o644)
+
+                self.challenge_http_responses[domain_name] = challenge_file_path
+                hooks.add('set_http_challenge', domain=domain_name, file=challenge_file_path)
+            except Exception as e:
+                # remove already saved challenges
+                self.abort()
+                log.raise_error('[%s] Unable to create acme-challenge file "%s"', domain_name, challenge_file_path, cause=e)
+
+        try:
+            hooks.call()
+            # Process authorizations
+            valid_authzr = _get_authorizations(acme_client, authzrs, self.auth.retry, self.auth.delay, 'http-01')
+        except Exception:
+            self.abort()
+            raise
+
+        for domain_name, challenge_file in self.challenge_http_responses.items():
+            log.debug('Removing http acme-challenge for %s', domain_name)
+            os.remove(challenge_file)
+            hooks.add('clear_http_challenge', domain=domain_name, file=challenge_file)
+        hooks.call()
+
+        return valid_authzr
+
+    def abort(self):
+        for challenge_file in self.challenge_http_responses.values():
+            # FIXME: ignore error ?
+            os.remove(challenge_file)
+
+
+def authorize_http(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+    driver = HttpAuthDriver(context.config.auth)
+    return _authorize(driver, csr, acme_client, hooks)
+
+
+# -------- DNS Auth
+
+class DnsAuthDriver(AuthDriver):
+
+    def __init__(self, auth: DnsAuthDef):
+        self.auth = auth
+        self.records = []
+
+    def authorize(self, authzrs: List[messages.AuthorizationResource], acme_client: client.ClientV2, hooks: Hooks):
+        import dns.name
+        import dns.query
+        import dns.update
+        import dns.tsigkeyring
+
+        for authzr in authzrs:
+            domain_name = authzr.body.identifier.value
+            challenge: Optional[DNS01] = _get_challenge(authzr, 'dns-01')
+            if not challenge:
+                log.raise_error('[%s] Unsupported dns-01 challenge', domain_name)
+
+            zone = self.auth.zone(domain_name)
+            if not zone:
+                log.raise_error("[%s] DNS zone not specified", domain_name)
+
+            server = self.auth.server(domain_name)
+            if not server:
+                log.raise_error("[%s] DNS server not specified", domain_name)
+
+            key_spec: TsigKey = self.auth.key(domain_name)
+            if not key_spec:
+                log.raise_error("[%s] no TSIG key specified", domain_name)
+
+            record_name = challenge.validation_domain_name(domain_name)
+            log.debug('Setting dns record "%s"', record_name)
+
+            # relativize domain_name by stripping zone name
+            n = dns.name.from_text(record_name)
+            o = dns.name.from_text(zone)
+            rel = n.relativize(o)
+
+            keyring = dns.tsigkeyring.from_text({key_spec.name: key_spec.secret})
+            update = dns.update.Update(zone, keyring=keyring, keyalgorithm=key_spec.algorithm)
+            update.add(rel, 300, dns.rdatatype.TXT, challenge.validation(acme_client.net.key))
+            try:
+                response = dns.query.tcp(update, server)
+            except Exception as ex:
+                self.cleanup()
+                log.raise_error('Cannot add DNS record', cause=ex)
+                raise  # silence flow analyzer warning
+
+            rcode = response.rcode()
+            if rcode == dns.rcode.NOERROR:
+                log.debug('[%s] successfully added TXT record', domain_name)
+                self.records.append((key_spec, zone, server, rel))  # tuple: key_spec, server, name
+            else:
+                self.cleanup()
+                log.raise_error('add record return returns rcode %s', dns.rcode.to_text(rcode))
+
+        try:
+            # Process authorizations
+            valid_authzr = _get_authorizations(acme_client, authzrs, self.auth.retry, self.auth.delay, 'dns-01')
+        except Exception:
+            self.cleanup()
+            raise
+
+        self.cleanup()
+
+        return valid_authzr
+
+    def cleanup(self):
+        import dns
+
+        for key_spec, zone, server, name in self.records:
+            keyring = dns.tsigkeyring.from_text({key_spec.name: key_spec.secret})
+            update = dns.update.Update(zone, keyring=keyring, keyalgorithm=key_spec.algorithm)
+            update.delete(name)
+            try:
+                response = dns.query.tcp(update, server)
+                if response.rcode() != dns.rcode.NOERROR:
+                    log.warning('[%s.%s] DNS record cleanup failed: %s', name, zone, dns.rcode.to_text(response.rcode()))
+            except Exception as ex:
+                log.warning('[%s.%s] DNS record cleanup failed: %s', name, zone, str(ex))
+
+
+def authorize_dns(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+    driver = DnsAuthDriver(context.config.auth)
+    return _authorize(driver, csr, acme_client, hooks)
+
+
+# -------- Hook Auth
+
+class HookAuthDriver(AuthDriver):
+
+    def __init__(self, auth: HookAuthDef):
+        self.auth = auth
+
+    def authorize(self, authzrs: List[messages.AuthorizationResource], acme_client: client.ClientV2, hooks: Hooks):
+        for authzr in authzrs:
+            domain_name = authzr.body.identifier.value
+            # TODO: tweak argument list
+            self.auth.cmd.execute(common_name=domain_name)
+        return authzrs  # FIXME: should update authzrs
+
+
 def authorize_hook(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
-    auth: HookAuthDef = context.config.auth
-    # TODO: tweak argument list
-    auth.cmd.execute(common_name=context.common_name)
-    return authorize_noop(csr, acme_client)
+    return _authorize(HookAuthDriver(context.config.auth), csr, acme_client, hooks)
 
 
 def authorize(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
     auth = context.config.auth
     if auth.type == AuthType.noop:
-        return authorize_noop(csr, acme_client)
+        return authorize_noop(csr, acme_client, hooks)
     elif auth.type == AuthType.http:
         return authorize_http(csr, context, acme_client, hooks)
+    elif auth.type == AuthType.dns:
+        return authorize_dns(csr, context, acme_client, hooks)
     elif auth.type == AuthType.hook:
         return authorize_hook(csr, context, acme_client, hooks)

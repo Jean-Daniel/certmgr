@@ -3,5 +3,6 @@ josepy
 pyOpenSSL
 
 requests
+dnspython
 asn1crypto>=0.24.0
 cryptography>=2.1.4

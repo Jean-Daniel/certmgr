@@ -1,4 +1,5 @@
 import base64
+import collections
 import datetime
 import grp
 import json
@@ -8,8 +9,6 @@ import pwd
 from collections import OrderedDict
 from enum import Enum
 from typing import Container, Dict, Iterable, List, Optional, Union
-
-import collections
 
 from . import AcmeError
 from .logging import PROGRESS, log
@@ -108,15 +107,13 @@ class VerifyDef:
 
 class AuthType(Enum):
     noop = 0
-    http = 1
-    hook = 2
+    dns = 1
+    http = 2
+    hook = 3
 
 
 class AuthDef:
-    __slots__ = ('type',)
-
-    def __init__(self, ty: AuthType):
-        self.type: AuthType = ty
+    type: AuthType
 
     @staticmethod
     def parse(spec, default=None) -> 'AuthDef':
@@ -129,31 +126,22 @@ class AuthDef:
             return NoAuthDef()
         if ty == 'http':
             return HttpAuthDef(spec, default if default and default.type == 'http' else None)
+        if ty == 'dns':
+            return DnsAuthDef(spec, default if default and default.type == 'dns' else None)
         if ty == 'hook':
             return HookAuthDef(spec, default if default and default.type == 'hook' else None)
-        log.raise_error('auth: key type must be one of "noop", "http" or "hook".')
+        log.raise_error('auth: key type must be one of "noop", "http", "dns", or "hook".')
 
 
 class NoAuthDef(AuthDef):
-
-    def __init__(self):
-        super().__init__(AuthType.noop)
-
-
-class HookAuthDef(AuthDef):
-
-    def __init__(self, spec, default=Optional['HookAuthDef']):
-        super().__init__(AuthType.hook)
-        cmd = spec.get('command')
-        if not cmd:
-            log.raise_error('auth: hook auth requires a command.')
-        self.cmd = Hook('auth', cmd)
+    type = AuthType.noop
 
 
 class HttpAuthDef(AuthDef):
+    type = AuthType.http
 
     def __init__(self, spec, default=Optional['HttpAuthDef']):
-        super().__init__(AuthType.http)
+        super().__init__()
         _check("auth:http", {'challenge_dir', 'delay', 'retry'}, spec)
         challenge_dir = spec.get('challenge_dir', None)
 
@@ -178,6 +166,103 @@ class HttpAuthDef(AuthDef):
         if http_challenge_directory and '{fqdn' in http_challenge_directory:
             http_challenge_directory = http_challenge_directory.format(fqdn=domain)
         return http_challenge_directory
+
+
+class TsigKey:
+    __slots__ = ('name', 'secret', 'algorithm')
+
+    def __init__(self, spec):
+        _check("auth:dns:key", {'name', 'secret', 'algoritm'}, spec)
+        self.name: str = spec['name']
+        self.secret: str = spec['secret']
+        self.algorithm: str = spec.get('algoritm', 'HMAC-MD5.SIG-ALG.REG.INT')
+
+# HMAC_MD5 = dns.name.from_text("HMAC-MD5.SIG-ALG.REG.INT")
+# HMAC_SHA1 = dns.name.from_text("hmac-sha1")
+# HMAC_SHA224 = dns.name.from_text("hmac-sha224")
+# HMAC_SHA256 = dns.name.from_text("hmac-sha256")
+# HMAC_SHA384 = dns.name.from_text("hmac-sha384")
+# HMAC_SHA512 = dns.name.from_text("hmac-sha512")
+
+
+class DnsAuthDef(AuthDef):
+    type = AuthType.dns
+
+    def __init__(self, spec, default=Optional['DnsAuthDef']):
+        super().__init__()
+        _check("auth:dns", {'key', 'zone', 'server', 'delay', 'retry'}, spec)
+
+        zone = spec.get('zone', None)
+        # noinspection PyProtectedMember
+        self._zones = dict(default._zones) if default else {}
+        if isinstance(zone, dict):
+            # noinspection PyProtectedMember
+            self._default_zone = zone.pop('default', default._default_zone if default else None)
+            self._zones.update(zone)
+        else:
+            self._default_zone = zone
+
+        # ditto for servers
+        server = spec.get('server', None)
+        # noinspection PyProtectedMember
+        self._servers = dict(default._servers) if default else {}
+        if isinstance(server, dict):
+            # noinspection PyProtectedMember
+            self._default_server = server.pop('default', default._default_server if default else None)
+            self._servers.update(server)
+        else:
+            self._default_server = server
+
+        # ditto for keys
+        key = spec.get('key', None)
+        # noinspection PyProtectedMember
+        self._keys = dict(default._keys) if default else {}
+        if key is not None and 'secret' not in key:
+            default_key = server.pop('key', None)
+            if default_key:
+                self._default_key = TsigKey(default_key)
+            else:
+                # noinspection PyProtectedMember
+                self._default_key = default._default_key if default else None
+            self._keys.update({domain: TsigKey(k) for domain, k in key.items()})
+        else:
+            self._default_key = TsigKey(key) if key else None
+
+        self.delay: int = _get_int(spec, 'delay', default.delay if default else 10)
+        self.retry: int = _get_int(spec, 'retry', default.retry if default else 30)
+
+    def key(self, domain: str) -> Optional[TsigKey]:
+        key = self._keys.get(domain)
+        return key or self._default_key
+
+    def server(self, domain: str) -> Optional[str]:
+        server = self._servers.get(domain)
+        return server or self._default_server
+
+    def zone(self, domain: str) -> str:
+        zone = self._zones.get(domain)
+        if zone:
+            return zone
+
+        if self._default_zone:
+            return self._default_zone
+
+        # FIXME: default to assuming all zones are simple zones (name.tld)
+        components = domain.rsplit('.', 2)
+        if len(components) <= 2:
+            return domain
+        return '.'.join(components[:-2])
+
+
+class HookAuthDef(AuthDef):
+    type = AuthType.hook
+
+    def __init__(self, spec, default=Optional['HookAuthDef']):
+        super().__init__()
+        cmd = spec.get('command')
+        if not cmd:
+            log.raise_error('auth: hook auth requires a command.')
+        self.cmd = Hook('auth', cmd)
 
 
 class PrivateKeyDef:
