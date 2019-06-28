@@ -54,6 +54,15 @@ def _send_starttls(ty: str, sock: socket.socket, host_name: str):
             log.raise_error('STARTTLS not supported on server')
         sock.send(b'StartTls\r\n')
         log.debug('SIEVE: %s', sock.recv(4096))
+    elif 'ldap' == ty:
+        log.debug('Sending LDAP StartTLS\n')
+        sock.send(b'\x30\x1d\x02\x01\x01\x77\x18\x80\x16\x31\x2e\x33\x2e\x36\x2e\x31\x2e\x34\x2e\x31\x2e\x31\x34\x36\x36\x2e\x32\x30\x30\x33\x37')
+        buffer = sock.recv(4096)
+        if b'\x0a\x01\x00' != buffer[7:10]:
+            sock.shutdown(socket.SHUT_RDWR)
+            sock.close()
+            log.raise_error('STARTTLS not supported on server')
+        log.debug('LDAP: %s', buffer.hex())
     else:
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
@@ -104,7 +113,7 @@ def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
 
 def _verify_certificate_installation(item: CertificateItem, host_name: str, port_number: int, starttls: Optional[str], cipher_list,
                                      max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int):
-    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
+    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
     ssl_context.set_cipher_list(cipher_list)
 
     try:
@@ -160,7 +169,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
 
 def verify_certificate_installation(context: CertificateContext):
     key_type_ciphers = {}
-    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)
+    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
     ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
     all_ciphers = ssl_sock.get_cipher_list()
     for key_type in context.config.key_types:
