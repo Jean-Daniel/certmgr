@@ -131,7 +131,7 @@ class _RSAKey(PrivateKey):
         return self._key.key_size
 
     def __str__(self):
-        return '{key_size} bits'.format(key_size=self.params)
+        return f'{self.params} bits'
 
 
 class _ECDSAKey(PrivateKey):
@@ -145,7 +145,7 @@ class _ECDSAKey(PrivateKey):
         return self._key.curve.name
 
     def __str__(self):
-        return 'curve {key_curve}'.format(key_curve=self.params)
+        return f'curve {self.params}'
 
 
 # -------- Certificates
@@ -352,7 +352,7 @@ def get_ecparam_curve(ecparam_pem: bytes) -> str:
 def fetch_dhparam(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
     if dhparam_size not in (2048, 3072, 4096, 8192):
         log.raise_error("--fast-params only supports 2048, 3072, 4096 and 8192 bit param (and not %s)", dhparam_size)
-    url = "https://2ton.com.au/dhparam/{}/{}".format(dhparam_size, dhparam_idx % 128)
+    url = f"https://2ton.com.au/dhparam/{dhparam_size}/{dhparam_idx % 128}"
     try:
         log.progress('Fetching %s bit Diffie-Hellman parameters (index %s)', dhparam_size, dhparam_idx)
         req = requests.get(url)

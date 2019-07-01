@@ -281,10 +281,10 @@ class KeyCipherData(NamedTuple):
 def get_key_cipher(name, passphrase, force_prompt) -> Optional[KeyCipherData]:
     forced = not bool(passphrase)
     if (passphrase is True) or (not passphrase and force_prompt):
-        passphrase = os.getenv('{cert}_PASSPHRASE'.format(cert=name.replace('.', '_').upper()))
+        passphrase = os.getenv(f'{name.replace(".", "_").upper()}_PASSPHRASE')
         if not passphrase:
             if sys.stdin.isatty():
-                passphrase = getpass.getpass('Enter private key password for {name}: '.format(name=name))
+                passphrase = getpass.getpass(f'Enter private key password for {name}: ')
             else:
                 passphrase = sys.stdin.readline().strip()
         # TODO: what to do if no passphrase at this point ?

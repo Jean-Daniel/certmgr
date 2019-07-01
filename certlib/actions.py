@@ -129,7 +129,7 @@ class CheckAction(Action):
         with log.prefix("  - "):
             self._check_file(context.params_path, 0o640, owner)
         for item in context:
-            with log.prefix("  - [{}] ".format(item.type.upper())):
+            with log.prefix(f"  - [{item.type.upper()}] "):
                 # Private Keys
                 self._check_file(item.key_path(), 0o640, owner)
                 self._check_file(item.key_path(full=True), 0o640, owner)
@@ -214,7 +214,7 @@ class RevokeAction(Action):
         certificate_count = 0
         revoked_certificates = []
         for item in context:
-            with log.prefix("  - [{}] ".format(item.type.upper())):
+            with log.prefix(f"  - [{item.type.upper()}] "):
                 cert = item.certificate
                 if cert:
                     certificate_count += 1

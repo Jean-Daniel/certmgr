@@ -310,7 +310,7 @@ class CertificateDef:
     def __init__(self, spec: dict, defaults, auth: Optional[AuthDef], verify: Optional[VerifyDef], ct_logs):
         self.common_name = spec['name'].strip().lower()
 
-        with log.prefix("[{}] ".format(self.common_name)):
+        with log.prefix(f"[{self.common_name}] "):
             for key in spec.keys():
                 if key not in self.SUPPORTED_KEYS:
                     log.warning("unknown parameter %s", key)

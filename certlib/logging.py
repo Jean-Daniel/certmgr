@@ -65,8 +65,7 @@ class ColorFormatter(_Formatter):
             color = 'light gray'
 
         msg = super().format(record)
-        return '\033[{style};{color}m{message}\033[0m'.format(color=self._color_codes[color],
-                                                              style=self._style_codes[style], message=msg)
+        return f'\033[{self._style_codes[style]};{self._color_codes[color]}m{msg}\033[0m'
 
 
 class _Logger(logging.LoggerAdapter):

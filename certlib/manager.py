@@ -129,7 +129,7 @@ class AcmeManager:
         action = cls(self.config, self.args, contexts, acme_client)
         for context in contexts:
             try:
-                with log.prefix('[{}] '.format(context.name)):
+                with log.prefix(f'[{context.name}] '):
                     action.run(context)
                 ok.append(context.name)
             except AcmeError as e:
@@ -147,7 +147,7 @@ class AcmeManager:
 
             def _plural(duration, unit):
                 if 0 < duration:
-                    return '{duration} {unit}{plural} '.format(duration=duration, unit=unit, plural='' if (1 == duration) else 's')
+                    return f'{duration} {unit}{"" if (1 == duration) else "s"} '
                 return ''
 
             log.debug('Waiting for %s%s%s',

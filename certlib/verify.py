@@ -178,18 +178,12 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
         return
 
     tlsa_records = _lookup_tlsa_records(host_name, port_number, 'tcp')
-    if tlsa_records:
-        log.debug('Found TLSA records for %s:%s', host_name, port_number)
-        for tlsa_record in tlsa_records:
-            log.debug('    ', tlsa_record, '\n')
-    else:
-        log.debug('No TLSA records found for %s:%s', host_name, port_number)
 
     for addr in addr_info:
         ipaddr = ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0]
         host = f"{host_name} ({ipaddr}:{port_number}): "
         log.progress(" • Verifying host %s", host)
-        with log.prefix("   - [{}:{}] ".format(host_name, item.type.upper())):
+        with log.prefix(f"   - [{host_name}:{item.type.upper()}] "):
             try:
                 log.debug('Connecting')
                 installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, starttls)
@@ -228,16 +222,20 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
 
                 if tlsa_records:
                     tlsa_match = False
+                    log.progress('TLSA records')
                     for tlsa_record in tlsa_records:
-                        if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
-                            log.progress('TLSA record matches', extra={'color': 'green'})
-                            log.debug('    ', tlsa_record, '\n')
-                            tlsa_match = True
-                        else:
-                            log.error('TLSA record does not match')
-                            log.debug('    ', tlsa_record, '\n')
+                        with log.prefix(f" * [{tlsa_record}] "):
+                            if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
+                                log.progress('TLSA record matches', extra={'color': 'green'})
+                                log.debug('    ', tlsa_record, '\n')
+                                tlsa_match = True
+                            else:
+                                log.error('TLSA record does not match')
+                                log.debug('    ', tlsa_record, '\n')
                     if not tlsa_match:
                         log.warning('ERROR: No TLSA records match certificate')
+                else:
+                    log.debug('no TLSA records')
 
             except Exception as error:
                 log.error('Unable to connect: %s', str(error))

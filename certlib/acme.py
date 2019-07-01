@@ -17,7 +17,7 @@ from .utils import (ArchiveAndWriteOperation, ArchiveOperation, WriteOperation, 
 
 def _user_agent():
     acmelib = pkg_resources.get_distribution('acme')
-    return 'certmgr/{version} acme-python/{acme_version}'.format(version=VERSION, acme_version=acmelib.version if acmelib else "0.0.0")
+    return f'certmgr/{VERSION} acme-python/{acmelib.version if acmelib else "0.0.0"}'
 
 
 class _PasswordProvider:

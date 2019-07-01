@@ -67,7 +67,7 @@ class AcmeAuthDriver(AuthDriver):
         # answer challenges
         for authzr in authzrs:
             domain_name = authzr.body.identifier.value
-            with log.prefix("  [{}] ".format(domain_name)):
+            with log.prefix(f"  [{domain_name}] "):
                 challenge = self.get_challenge(authzr)
                 try:
                     log.debug('Answering challenge')
@@ -82,7 +82,7 @@ class AcmeAuthDriver(AuthDriver):
         while pending_authzr:
             when, authzr = pending_authzr.pop(0)
             domain_name = authzr.body.identifier.value
-            with log.prefix("  [{}] ".format(domain_name)):
+            with log.prefix(f"  [{domain_name}] "):
                 now = datetime.datetime.now()
                 if now < when:
                     seconds = (when - now).seconds

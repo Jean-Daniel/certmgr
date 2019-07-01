@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives import serialization
 
 from . import AcmeError
 from .actions import Action, prune_achives, update_links
-from .auth import authorize
+from .auth import authorize, authorize_noop
 from .config import Configuration
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
@@ -100,7 +100,7 @@ class UpdateAction(Action):
 
         # For each types, check if the cert exists and is valid (params match and not about to expire)
         for item in context:  # type: CertificateItem
-            with log.prefix('  - [{}] '.format(item.type.upper())):
+            with log.prefix(f'  - [{item.type.upper()}] '):
                 if self.args.force or item.should_renew(self.config.int('renewal_days')):
                     log.progress('Generating key')
                     key = PrivateKey.create(item.type, item.params)
@@ -108,7 +108,7 @@ class UpdateAction(Action):
                     log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.alt_names))
                     csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
                     if self.args.no_auth:
-                        order = authorize_noop(csr, self.acme_client)
+                        order = authorize_noop(csr, self.acme_client, Hooks(self.config.hooks))
                     else:
                         order = authorize(csr, context, self.acme_client, Hooks(self.config.hooks))
 
@@ -181,7 +181,7 @@ class UpdateAction(Action):
                 item.ocsp_response = None
                 continue
 
-            with log.prefix('  - [{}] '.format(item.type.upper())):
+            with log.prefix(f'  - [{item.type.upper()}] '):
                 if not item.certificate:
                     log.warning("certificate not found. Can't update OCSP response")
                     continue
@@ -260,7 +260,7 @@ class UpdateAction(Action):
         log.info('Update Signed Certificate Timestamps')
 
         for item in context:  # type: CertificateItem
-            with log.prefix('  - [{}] '.format(item.type.upper())):
+            with log.prefix(f'  - [{item.type.upper()}] '):
                 if not item.certificate:
                     log.warning('certificate not found')
                     continue
@@ -384,7 +384,7 @@ class UpdateAction(Action):
         # Verify is needed
         if self.args.verify:
             for context in self._done:
-                with log.prefix("[{}] ".format(context.name)):
+                with log.prefix(f"[{context.name}] "):
                     log.info("Verify certificates")
                     try:
                         verify_certificate_installation(context)
@@ -394,7 +394,7 @@ class UpdateAction(Action):
     def _reload_services(self) -> bool:
         reloaded = False
         for service_name in self._services:
-            with log.prefix(" - [{}] ".format(service_name)):
+            with log.prefix(f" - [{service_name}] "):
                 service_command = self.config.service(service_name)
                 if service_command:
                     log.info('reloading service')
