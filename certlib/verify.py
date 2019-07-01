@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 import OpenSSL
 
-from certlib.config import VerifyDef
+from .config import VerifyDef
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate
 from .logging import log

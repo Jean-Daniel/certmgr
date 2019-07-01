@@ -1,13 +1,12 @@
 import argparse
 import contextlib
-from typing import Tuple, List
-
 import fcntl
 import logging
 import os
 import random
 import sys
 import time
+from typing import List, Tuple
 
 from acme import client
 

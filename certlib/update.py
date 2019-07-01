@@ -12,9 +12,9 @@ from asn1crypto import ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from certlib.auth import authorize, authorize_noop
 from . import AcmeError
 from .actions import Action, prune_achives, update_links
+from .auth import authorize
 from .config import Configuration
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate, PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain

@@ -11,10 +11,9 @@ import OpenSSL
 import josepy
 from acme import client
 
-from certlib.auth import authorize
+from .auth import authorize
 from .config import Configuration
-from .context import CertificateContext
-from .context import CertificateItem
+from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey
 from .logging import log
 from .utils import ArchiveOperation, FileOwner, Hooks, commit_file_transactions, dirmode

@@ -2,9 +2,9 @@ import contextlib
 import logging
 import sys
 import traceback
-from typing import Optional, NoReturn
+from typing import NoReturn, Optional
 
-from certlib import AcmeError
+from . import AcmeError
 
 PROGRESS = 25
 logging.addLevelName(PROGRESS, "PROGRESS")

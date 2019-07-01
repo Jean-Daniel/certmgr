@@ -8,7 +8,7 @@ import os
 import pwd
 from collections import OrderedDict
 from enum import Enum
-from typing import Container, Dict, Iterable, List, Optional, Union
+from typing import Container, Dict, Iterable, List, Optional, Tuple, Union
 
 from . import AcmeError
 from .logging import PROGRESS, log
@@ -169,20 +169,21 @@ class HttpAuthDef(AuthDef):
 
 
 class TsigKey:
-    __slots__ = ('name', 'secret', 'algorithm')
+    __slots__ = ('id', 'secret', 'algorithm')
+
+    SUPPORTED_AGORITHMS = {
+        "hmac-md5", "hmac-sha1", "hmac-sha224", "hmac-sha256", "hmac-sha384", "hmac-sha512"
+    }
 
     def __init__(self, spec):
-        _check("auth:dns:key", {'name', 'secret', 'algoritm'}, spec)
-        self.name: str = spec['name']
-        self.secret: str = spec['secret']
-        self.algorithm: str = spec.get('algoritm', 'HMAC-MD5.SIG-ALG.REG.INT')
-
-# HMAC_MD5 = dns.name.from_text("HMAC-MD5.SIG-ALG.REG.INT")
-# HMAC_SHA1 = dns.name.from_text("hmac-sha1")
-# HMAC_SHA224 = dns.name.from_text("hmac-sha224")
-# HMAC_SHA256 = dns.name.from_text("hmac-sha256")
-# HMAC_SHA384 = dns.name.from_text("hmac-sha384")
-# HMAC_SHA512 = dns.name.from_text("hmac-sha512")
+        _check("auth:dns:key", {'id', 'secret', 'algoritm'}, spec)
+        self.id: str = spec.get('id', None)
+        self.secret: str = spec.get('secret', None)
+        if not self.id or not self.secret:
+            log.raise_error("Missing required value for 'id' or 'secret' in TSIG Key")
+        self.algorithm: str = spec.get('algorithm', 'hmac-sha256')
+        if self.algorithm not in self.SUPPORTED_AGORITHMS:
+            log.raise_error('Unsupported TSIG algorithm: "%s". Must be one of %s', self.algorithm, sorted(self.SUPPORTED_AGORITHMS))
 
 
 class DnsAuthDef(AuthDef):
@@ -206,7 +207,7 @@ class DnsAuthDef(AuthDef):
         server = spec.get('server', None)
         # noinspection PyProtectedMember
         self._servers = dict(default._servers) if default else {}
-        if isinstance(server, dict):
+        if isinstance(server, dict) and 'host' not in server:
             # noinspection PyProtectedMember
             self._default_server = server.pop('default', default._default_server if default else None)
             self._servers.update(server)
@@ -235,9 +236,12 @@ class DnsAuthDef(AuthDef):
         key = self._keys.get(domain)
         return key or self._default_key
 
-    def server(self, domain: str) -> Optional[str]:
-        server = self._servers.get(domain)
-        return server or self._default_server
+    def server(self, domain: str) -> Optional[Tuple[str, int]]:
+        server = self._servers.get(domain) or self._default_server
+        if isinstance(server, dict):
+            return server.get('host'), server.get('port', 53)
+
+        return (server, 53) if server else None
 
     def zone(self, domain: str) -> str:
         zone = self._zones.get(domain)
@@ -251,7 +255,7 @@ class DnsAuthDef(AuthDef):
         components = domain.rsplit('.', 2)
         if len(components) <= 2:
             return domain
-        return '.'.join(components[:-2])
+        return '.'.join(components[-2:])
 
 
 class HookAuthDef(AuthDef):

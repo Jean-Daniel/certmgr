@@ -8,8 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import AnyStr, Dict, List, NamedTuple, Tuple
-from typing import Iterable, Optional
+from typing import AnyStr, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from .logging import log
 
