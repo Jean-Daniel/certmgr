@@ -176,7 +176,7 @@ class TsigKey:
     }
 
     def __init__(self, spec):
-        _check("auth:dns:key", {'id', 'secret', 'algoritm'}, spec)
+        _check("auth:dns:key", {'id', 'secret', 'algorithm'}, spec)
         self.id: str = spec.get('id', None)
         self.secret: str = spec.get('secret', None)
         if not self.id or not self.secret:

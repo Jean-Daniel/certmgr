@@ -170,7 +170,7 @@ class Certificate:
         return self._cert.public_bytes(serialization.Encoding.PEM if pem else serialization.Encoding.DER)
 
     # to test if certificate and private key match
-    def public_key_bytes(self):
+    def public_key_bytes(self) -> bytes:
         return self._cert.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
 
     @property

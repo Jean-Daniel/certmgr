@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import time
-from typing import List, Optional
+from typing import List
 
 from acme import client
 from asn1crypto import ocsp
@@ -17,7 +17,7 @@ from .actions import Action, prune_achives, update_links
 from .auth import authorize
 from .config import Configuration
 from .context import CertificateContext, CertificateItem
-from .crypto import Certificate, PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
+from .crypto import PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
 from .logging import log
 from .ocsp import OCSP
 from .sct import SCTLog, fetch_sct
@@ -70,17 +70,10 @@ class UpdateAction(Action):
         super().__init__(config, args, contexts, acme_client)
         self._done = []
         self._services = set()
-        self._root_certificates = {}
         # counter used to avoid fetching duplicated dhparam when using dhparam server.
         # using counter in decreasing order so if a dhparam rollout occurs on the server
         # while updating the certificates, we don't accidentally fetch 2 times the same param
         self._counter = len(contexts)
-
-    def root_certificate(self, key_type: str) -> Optional[Certificate]:
-        if key_type not in self._root_certificates:
-            cert_path = os.path.join(os.path.dirname(self.config.path), 'root_cert.{}.pem'.format(key_type))
-            self._root_certificates[key_type] = Certificate.load(cert_path)
-        return self._root_certificates[key_type]
 
     def run(self, context: CertificateContext):
         if self.args.certs:
@@ -207,7 +200,7 @@ class UpdateAction(Action):
                     continue
 
                 chain = item.chain
-                issuer_certificate = chain[0] if chain else self.root_certificate(item.type)
+                issuer_certificate = chain[0] if chain else context.root_certificate(item.type)
                 issuer_name = issuer_certificate.x509_certificate.subject.public_bytes(default_backend())
                 issuer_key = issuer_certificate.x509_certificate.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.PKCS1)
                 tbs_request = ocsp.TBSRequest({
@@ -298,7 +291,7 @@ class UpdateAction(Action):
 
         # save private keys
         for item in context:  # type: CertificateItem
-            root = self.root_certificate(item.type)
+            root = context.root_certificate(item.type)
             if not root:
                 # archive existing file
                 path = item.certificate_path(full=True)

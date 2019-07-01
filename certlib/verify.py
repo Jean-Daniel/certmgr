@@ -1,10 +1,16 @@
 # Verify
+import hashlib
 import socket
 import time
 from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 import OpenSSL
+import dns
+import dns.exception
+import dns.rdtypes.ANY.TLSA
+from dns import rdatatype
+from dns.resolver import Answer
 
 from .config import VerifyDef
 from .context import CertificateContext, CertificateItem
@@ -97,6 +103,53 @@ def _fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) 
     return [Certificate(installed_certificate.to_cryptography()) for installed_certificate in installed_certificates], ocsp
 
 
+def _lookup_tlsa_records(host, port, protocol='tcp') -> List[dns.rdtypes.ANY.TLSA.TLSA]:
+    try:
+        answers: Answer = dns.resolver.query(f'_{port}._{protocol}.{host}', rdatatype.TLSA)
+        return answers.rrset
+    except dns.exception.NoAnswer:
+        return []
+
+
+def _tlsa_record_matches(tlsa_record: dns.rdtypes.ANY.TLSA.TLSA, certificate: Certificate, chain: List[Certificate], root_certificate: Certificate):
+    matches = []
+    if tlsa_record.usage in (0, 2):  # match record in chain + root
+        certificates = list(chain)
+        certificates.append(root_certificate)
+
+        if tlsa_record.selector == 0:
+            for chain_certificate in certificates:
+                matches.append(chain_certificate.encode(pem=False))
+        elif tlsa_record.selector == 1:
+            for chain_certificate in certificates:
+                matches.append(chain_certificate.public_key_bytes())
+        else:
+            log.warning('ERROR: unknown selector in TLSA record %s', tlsa_record)
+    elif tlsa_record.usage in (1, 3):  # match record to certifitcate
+        if tlsa_record.selector == 0:
+            matches.append(certificate.encode(pem=False))
+        elif tlsa_record.selector == 1:
+            matches.append(certificate.public_key_bytes())
+        else:
+            log.warning('ERROR: unknown selector in TLSA record %s', tlsa_record)
+    else:
+        log.warning('ERROR: unknown usage in TLSA record %s', tlsa_record)
+
+    for match in matches:
+        if tlsa_record.mtype == 0:  # entire certificate/key
+            if match.hex() == tlsa_record.cert:
+                return True
+        elif tlsa_record.mtype == 1:  # sha256 of data
+            if hashlib.sha256(match).hexdigest() == tlsa_record.cert:
+                return True
+        elif tlsa_record.mtype == 2:  # sha512 of data
+            if hashlib.sha512(match).hexdigest() == tlsa_record.cert:
+                return True
+        else:
+            log.warning('ERROR: unknown matching type in TLSA record %s', tlsa_record)
+    return False
+
+
 def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
     if len(chain) == 1:
         return chain
@@ -112,7 +165,7 @@ def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
 
 
 def _verify_certificate_installation(item: CertificateItem, host_name: str, port_number: int, starttls: Optional[str], cipher_list,
-                                     max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int):
+                                     max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int, root_certificate: Certificate):
     ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
     ssl_context.set_cipher_list(cipher_list)
 
@@ -124,8 +177,17 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
         log.error('Unable to get "%s" address: %s', host_name, str(error))
         return
 
+    tlsa_records = _lookup_tlsa_records(host_name, port_number, 'tcp')
+    if tlsa_records:
+        log.debug('Found TLSA records for %s:%s', host_name, port_number)
+        for tlsa_record in tlsa_records:
+            log.debug('    ', tlsa_record, '\n')
+    else:
+        log.debug('No TLSA records found for %s:%s', host_name, port_number)
+
     for addr in addr_info:
-        host = "{} ({}:{}): ".format(host_name, ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0], port_number)
+        ipaddr = ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0]
+        host = f"{host_name} ({ipaddr}:{port_number}): "
         log.progress(" • Verifying host %s", host)
         with log.prefix("   - [{}:{}] ".format(host_name, item.type.upper())):
             try:
@@ -163,6 +225,20 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                 else:
                     if item.certificate.has_oscp_must_staple:
                         log.error('Certificate has OCSP Must-Staple but no OSCP staple found')
+
+                if tlsa_records:
+                    tlsa_match = False
+                    for tlsa_record in tlsa_records:
+                        if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
+                            log.progress('TLSA record matches', extra={'color': 'green'})
+                            log.debug('    ', tlsa_record, '\n')
+                            tlsa_match = True
+                        else:
+                            log.error('TLSA record does not match')
+                            log.debug('    ', tlsa_record, '\n')
+                    if not tlsa_match:
+                        log.warning('ERROR: No TLSA records match certificate')
+
             except Exception as error:
                 log.error('Unable to connect: %s', str(error))
 
@@ -194,4 +270,5 @@ def verify_certificate_installation(context: CertificateContext):
             if target.key_types and item.type not in target.key_types:
                 continue
             for host_name in target.hosts or context.domain_names:
-                _verify_certificate_installation(item, host_name, target.port, target.starttls, key_type_ciphers[item.type], verify.ocsp_max_attempts, verify.ocsp_retry_delay)
+                _verify_certificate_installation(item, host_name, target.port, target.starttls, key_type_ciphers[item.type],
+                                                 verify.ocsp_max_attempts, verify.ocsp_retry_delay, context.root_certificate(item.type))

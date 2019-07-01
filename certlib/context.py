@@ -264,7 +264,7 @@ class CertificateContext:
 
     # __slots__ = ('name', 'spec', 'params', 'params_updated', 'certificates')
 
-    def __init__(self, config: CertificateDef, data_dir: str):
+    def __init__(self, config: CertificateDef, data_dir: str, root_path: str):
         self.config = config
         self.data_dir = os.path.join(data_dir, config.name)
 
@@ -276,6 +276,9 @@ class CertificateContext:
         self._items = [CertificateItem(key_type, pkey.params(key_type), self) for key_type in config.key_types]  # type: List[CertificateItem]
 
         self._key_cipher = _UNINITIALIZED  # type: Optional[KeyCipherData]
+
+        self._root_path = root_path
+        self._root_certificates = {}
 
     def __len__(self):
         return len(self._items)
@@ -344,6 +347,12 @@ class CertificateContext:
     @property
     def domain_names(self):
         return self.config.alt_names
+
+    def root_certificate(self, key_type: str) -> Optional[Certificate]:
+        if key_type not in self._root_certificates:
+            cert_path = os.path.join(os.path.dirname(self._root_path), f'root_cert.{key_type}.pem')
+            self._root_certificates[key_type] = Certificate.load(cert_path)
+        return self._root_certificates[key_type]
 
     def key_cipher(self, force_prompt=False) -> Optional[KeyCipherData]:
         if self._key_cipher is _UNINITIALIZED:

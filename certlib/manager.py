@@ -113,7 +113,7 @@ class AcmeManager:
             if cert.name in certs:
                 log.info("requesting duplicated certificate (%s and %s)", certs[cert.name], certificate_name)
             else:
-                contexts.append(CertificateContext(cert, self.config.data_dir))
+                contexts.append(CertificateContext(cert, self.config.data_dir, self.config.path))
                 certs[cert.name] = certificate_name
 
         if not contexts:

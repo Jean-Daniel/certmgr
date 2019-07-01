@@ -1,6 +1,7 @@
 from acme import client, messages
 from cryptography import x509
 
+from .dns import authorize_dns
 from .hook import authorize_hook
 from .http import authorize_http
 from .noop import authorize_noop
@@ -16,7 +17,6 @@ def authorize(csr: x509.CertificateSigningRequest, context: CertificateContext, 
     elif auth.type == AuthType.http:
         return authorize_http(csr, context, acme_client, hooks)
     elif auth.type == AuthType.dns:
-        from .dns import authorize_dns
         return authorize_dns(csr, context, acme_client, hooks)
     elif auth.type == AuthType.hook:
         return authorize_hook(csr, context, acme_client, hooks)
