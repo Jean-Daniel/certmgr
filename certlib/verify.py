@@ -105,9 +105,9 @@ def _fetch_tls_info(addr, ssl_context, host_name: str, starttls: Optional[str]) 
 
 def _lookup_tlsa_records(host, port, protocol='tcp') -> List[dns.rdtypes.ANY.TLSA.TLSA]:
     try:
-        answers: Answer = dns.resolver.query(f'_{port}._{protocol}.{host}', rdatatype.TLSA)
+        answers: Answer = dns.resolver.query(f'_{port}._{protocol}.{host}.', rdatatype.TLSA)
         return answers.rrset
-    except dns.exception.NoAnswer:
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
         return []
 
 
