@@ -29,7 +29,7 @@ class HttpAuthDriver(AcmeAuthDriver):
             challenge = self.get_challenge(authzr)
             if not challenge:
                 log.raise_error('[%s] Unsupported http-01 challenge', domain_name)
-            challenge_file_path = os.path.join(http_challenge_directory, challenge.encode('token'))
+            challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
             log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
             try:
                 os.makedirs(os.path.dirname(challenge_file_path), 0o755, exist_ok=True)
