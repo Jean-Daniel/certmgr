@@ -20,11 +20,11 @@
     "ocsp_responder_urls": [ "http://ocsp.int-x3.letsencrypt.org" ],
     "ct_submit_logs": [ "google_icarus", "google_pilot" ],
     "renewal_days": 30,
-    "max_authorization_attempts": 30,
     "authorization_delay": 10,
+    "max_authorization_attempts": 30,
     "cert_poll_time": 30,
-    "max_ocsp_verify_attempts": 10,
     "ocsp_verify_retry_delay": 5,
+    "max_ocsp_verify_attempts": 10,
     "min_run_delay": 300,
     "max_run_delay": 3600,
     "acme_directory_url": "https://acme-v02.api.letsencrypt.org/directory"
@@ -125,6 +125,7 @@
         {
           "port": 25,
           "hosts": [ "<domain-name>", "<domain-name>" ],
+          "tlsa": false,
           "starttls": "smtp",
           "key_types": [ "rsa", "ecdsa" ]
         }

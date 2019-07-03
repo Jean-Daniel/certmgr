@@ -165,10 +165,40 @@ def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
     return list(sanitized.keys())
 
 
-def _verify_certificate_installation(item: CertificateItem, host_name: str, target: VerifyTarget, cipher_list,
+# Patch OpenSSL.SSL.Context until they include it natively (https://github.com/pyca/pyopenssl/issues/848)
+def set_sigalgs_list(context: OpenSSL.SSL.Context, algs_list: str):
+    """
+    Set the list of signatures algorithms to be used in this context.
+
+    See the OpenSSL manual for more information (e.g.
+    :manpage:`SSL_CTX_set1_sigalgs_list(1)`).
+
+    :param bytes algs_list: An OpenSSL cipher string.
+    :return: None
+    """
+    algs_list = OpenSSL.SSL._text_to_bytes_and_warn("algs_list", algs_list)
+
+    if not isinstance(algs_list, bytes):
+        raise TypeError("cipher_list must be a byte string.")
+
+    OpenSSL.SSL._openssl_assert(
+        OpenSSL.SSL._lib.SSL_CTX_set1_sigalgs_list(context._context, algs_list) == 1
+    )
+
+
+# FIXME: probably may be improved, but finding documentation about it is hard
+SIGNATURES = {
+    'rsa': 'RSA-PSS+SHA256:RSA-PSS+SHA384',
+    'ecdsa': 'ECDSA+SHA256:ECDSA+SHA384',
+}
+
+
+def _verify_certificate_installation(item: CertificateItem, host_name: str, target: VerifyTarget,
                                      max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int, root_certificate: Certificate):
-    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
-    ssl_context.set_cipher_list(cipher_list)
+    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.SSLv23_METHOD)  # FIXME: SSLv23_METHOD is deprecated, but it map to TLS in modern OpenSSL versions.
+    # This is a TLS1.3 proof way to force the returned certificate type.
+    # Forcing the cipher list to RSA or ECDSA ciphers is not possible with TLS1.3
+    set_sigalgs_list(ssl_context, SIGNATURES[item.type])
 
     port_number = target.port
     try:
@@ -193,14 +223,14 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, targ
                     attempts = 1
                     while (not ocsp_staple) and (attempts < max_ocsp_verify_attempts):
                         time.sleep(ocsp_verify_retry_delay)
-                        log.debug('Retry to fetch OCSP staple')
+                        log.debug('retry to fetch OCSP staple')
                         installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, target.starttls)
                         attempts += 1
 
                 installed_certificate = installed_certificates[0]
                 installed_chain = _validate_chain(installed_certificates[1:])
                 if item.certificate == installed_certificate:
-                    log.progress('certificate present', extra={'color': 'green'})
+                    log.progress('certificate match', extra={'color': 'green'})
                 else:
                     log.error('certificate %s mismatch', installed_certificate.common_name)
                 if len(item.chain) != len(installed_chain):
@@ -212,7 +242,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, targ
                         else:
                             log.error('Intermediate certificate "%s" mismatch', installed_intermediate.common_name)
                 if ocsp_staple:
-                    log.debug('Verify OCSP response status')
+                    log.debug('verify OCSP response status')
                     ocsp_status = ocsp_staple.cert_status
                     if 'good' == ocsp_status.lower():
                         log.progress('OCSP staple status is GOOD', extra={'color': 'green'})
@@ -223,35 +253,28 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, targ
                         log.error('Certificate has OCSP Must-Staple but no OSCP staple found')
 
                 if target.tlsa:
-                    log.progress('Verify TLSA records')
+                    log.debug('verify TLSA records')
                     if tlsa_records:
                         tlsa_match = False
                         for tlsa_record in tlsa_records:
                             with log.prefix(f" * [{tlsa_record}] "):
                                 if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
                                     log.progress('TLSA record matches', extra={'color': 'green'})
-                                    log.debug('    ', tlsa_record, '\n')
+                                    log.debug('    %s', tlsa_record)
                                     tlsa_match = True
                                 else:
                                     log.error('TLSA record does not match')
-                                    log.debug('    ', tlsa_record, '\n')
+                                    log.debug('    %s', tlsa_record)
                         if not tlsa_match:
                             log.warning('ERROR: No TLSA records match certificate')
                     else:
-                        log.warning('no TLSA records found')
+                        log.warning('no TLSA record found on DNS')
 
             except Exception as error:
                 log.error('Unable to connect: %s', str(error))
 
 
 def verify_certificate_installation(context: CertificateContext):
-    key_type_ciphers = {}
-    ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
-    ssl_sock = OpenSSL.SSL.Connection(ssl_context, socket.socket())
-    all_ciphers = ssl_sock.get_cipher_list()
-    for key_type in context.config.key_types:
-        key_type_ciphers[key_type] = ':'.join([cipher_name for cipher_name in all_ciphers if key_type.upper() in cipher_name]).encode('ascii')
-
     verify = context.config.verify  # type: VerifyDef
     if not verify.targets:
         return
@@ -271,5 +294,4 @@ def verify_certificate_installation(context: CertificateContext):
             if target.key_types and item.type not in target.key_types:
                 continue
             for host_name in target.hosts or context.domain_names:
-                _verify_certificate_installation(item, host_name, target, key_type_ciphers[item.type],
-                                                 verify.ocsp_max_attempts, verify.ocsp_retry_delay, context.root_certificate(item.type))
+                _verify_certificate_installation(item, host_name, target, verify.ocsp_max_attempts, verify.ocsp_retry_delay, context.root_certificate(item.type))
