@@ -12,6 +12,7 @@ import dns.rdtypes.ANY.TLSA
 from dns import rdatatype
 from dns.resolver import Answer
 
+from certlib.config import VerifyTarget
 from .config import VerifyDef
 from .context import CertificateContext, CertificateItem
 from .crypto import Certificate
@@ -164,11 +165,12 @@ def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
     return list(sanitized.keys())
 
 
-def _verify_certificate_installation(item: CertificateItem, host_name: str, port_number: int, starttls: Optional[str], cipher_list,
+def _verify_certificate_installation(item: CertificateItem, host_name: str, target: VerifyTarget, cipher_list,
                                      max_ocsp_verify_attempts: int, ocsp_verify_retry_delay: int, root_certificate: Certificate):
     ssl_context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD | OpenSSL.SSL.TLSv1_2_METHOD)
     ssl_context.set_cipher_list(cipher_list)
 
+    port_number = target.port
     try:
         if host_name.startswith('*.'):
             host_name = 'wildcard-test.' + host_name[2:]
@@ -177,7 +179,7 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
         log.error('Unable to get "%s" address: %s', host_name, str(error))
         return
 
-    tlsa_records = _lookup_tlsa_records(host_name, port_number, 'tcp')
+    tlsa_records = _lookup_tlsa_records(host_name, port_number, 'tcp') if target.tlsa else None
 
     for addr in addr_info:
         ipaddr = ('[' + addr[4][0] + ']') if (socket.AF_INET6 == addr[0]) else addr[4][0]
@@ -186,13 +188,13 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
         with log.prefix(f"   - [{host_name}:{item.type.upper()}] "):
             try:
                 log.debug('Connecting')
-                installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, starttls)
+                installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, target.starttls)
                 if item.certificate.has_oscp_must_staple:
                     attempts = 1
                     while (not ocsp_staple) and (attempts < max_ocsp_verify_attempts):
                         time.sleep(ocsp_verify_retry_delay)
                         log.debug('Retry to fetch OCSP staple')
-                        installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, starttls)
+                        installed_certificates, ocsp_staple = _fetch_tls_info(addr, ssl_context, host_name, target.starttls)
                         attempts += 1
 
                 installed_certificate = installed_certificates[0]
@@ -220,22 +222,23 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, port
                     if item.certificate.has_oscp_must_staple:
                         log.error('Certificate has OCSP Must-Staple but no OSCP staple found')
 
-                if tlsa_records:
-                    tlsa_match = False
-                    log.progress('TLSA records')
-                    for tlsa_record in tlsa_records:
-                        with log.prefix(f" * [{tlsa_record}] "):
-                            if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
-                                log.progress('TLSA record matches', extra={'color': 'green'})
-                                log.debug('    ', tlsa_record, '\n')
-                                tlsa_match = True
-                            else:
-                                log.error('TLSA record does not match')
-                                log.debug('    ', tlsa_record, '\n')
-                    if not tlsa_match:
-                        log.warning('ERROR: No TLSA records match certificate')
-                else:
-                    log.debug('no TLSA records')
+                if target.tlsa:
+                    log.progress('Verify TLSA records')
+                    if tlsa_records:
+                        tlsa_match = False
+                        for tlsa_record in tlsa_records:
+                            with log.prefix(f" * [{tlsa_record}] "):
+                                if _tlsa_record_matches(tlsa_record, installed_certificate, installed_chain, root_certificate):
+                                    log.progress('TLSA record matches', extra={'color': 'green'})
+                                    log.debug('    ', tlsa_record, '\n')
+                                    tlsa_match = True
+                                else:
+                                    log.error('TLSA record does not match')
+                                    log.debug('    ', tlsa_record, '\n')
+                        if not tlsa_match:
+                            log.warning('ERROR: No TLSA records match certificate')
+                    else:
+                        log.warning('no TLSA records found')
 
             except Exception as error:
                 log.error('Unable to connect: %s', str(error))
@@ -268,5 +271,5 @@ def verify_certificate_installation(context: CertificateContext):
             if target.key_types and item.type not in target.key_types:
                 continue
             for host_name in target.hosts or context.domain_names:
-                _verify_certificate_installation(item, host_name, target.port, target.starttls, key_type_ciphers[item.type],
+                _verify_certificate_installation(item, host_name, target, key_type_ciphers[item.type],
                                                  verify.ocsp_max_attempts, verify.ocsp_retry_delay, context.root_certificate(item.type))

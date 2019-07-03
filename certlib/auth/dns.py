@@ -68,7 +68,7 @@ class DnsAuthDriver(AcmeAuthDriver):
                 self.records.append((key_spec, zone, server, rel))  # tuple: key_spec, server, name
             else:
                 self.cleanup()
-                log.raise_error('add record return rcode %s', dns.rcode.to_text(rcode))
+                log.raise_error('[%s] add record return rcode %s', domain_name, dns.rcode.to_text(rcode))
 
         try:
             # Process authorizations

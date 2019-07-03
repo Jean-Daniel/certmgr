@@ -30,7 +30,7 @@ class HttpAuthDriver(AcmeAuthDriver):
             if not challenge:
                 log.raise_error('[%s] Unsupported http-01 challenge', domain_name)
             challenge_file_path = os.path.join(http_challenge_directory, challenge.chall.encode('token'))
-            log.debug('Setting http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
+            log.debug('writing http acme-challenge for "%s" in file "%s"', domain_name, challenge_file_path)
             try:
                 os.makedirs(os.path.dirname(challenge_file_path), 0o755, exist_ok=True)
                 with open(challenge_file_path, 'w') as f:
@@ -53,7 +53,7 @@ class HttpAuthDriver(AcmeAuthDriver):
             raise
 
         for domain_name, challenge_file in self.challenge_http_responses.items():
-            log.debug('Removing http acme-challenge for %s', domain_name)
+            log.debug('deleting http acme-challenge for %s', domain_name)
             os.remove(challenge_file)
             hooks.add('clear_http_challenge', domain=domain_name, file=challenge_file)
         hooks.call()

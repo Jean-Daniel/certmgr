@@ -61,12 +61,13 @@ def _merge(section: str, dest: dict, values: dict, check: bool = True):
 
 
 class VerifyTarget:
-    __slots__ = ('port', 'hosts', 'starttls', 'key_types')
+    __slots__ = ('port', 'hosts', 'starttls', 'tlsa', 'key_types')
 
     def __init__(self, spec):
         if isinstance(spec, (int, str)):
             self.port = spec
             self.hosts = ()
+            self.tlsa = False
             self.starttls = self.key_types = None
         else:
             assert isinstance(spec, dict), "dict expected but got " + str(spec.__class__)
@@ -74,10 +75,11 @@ class VerifyTarget:
                 log.raise_error('missing port definition')
 
             for key in spec.keys():
-                if key not in ('port', 'hosts', 'starttls', 'key_types'):
+                if key not in ('port', 'hosts', 'starttls', 'tlsa', 'key_types'):
                     log.warning("[verify] unknown key '%s'", key)
             self.port = spec.get('port')
             self.hosts = _get_list(spec, 'hosts')
+            self.tlsa = spec.get('tlsa')
             self.starttls = spec.get('starttls')
             self.key_types = _get_list(spec, 'key_types')
 
