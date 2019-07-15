@@ -351,7 +351,7 @@ def get_ecparam_curve(ecparam_pem: bytes) -> str:
 
 def fetch_dhparam(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
     if dhparam_size not in (2048, 3072, 4096, 8192):
-        log.raise_error("--fast-params only supports 2048, 3072, 4096 and 8192 bit param (and not %s)", dhparam_size)
+        return log.error("--fast-params only supports 2048, 3072, 4096 and 8192 bit param (and not %s)", dhparam_size)
     url = f"https://2ton.com.au/dhparam/{dhparam_size}/{dhparam_idx % 128}"
     try:
         log.progress('Fetching %s bit Diffie-Hellman parameters (index %s)', dhparam_size, dhparam_idx)
@@ -359,9 +359,8 @@ def fetch_dhparam(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
         if req.status_code == 200:
             return req.content
         if 400 <= req.status_code < 500:
-            log.raise_error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s): "%s"', req.status_code, req.reason, req.content)
+            return log.error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s): "%s"', req.status_code, req.reason, req.content)
         else:
-            log.raise_error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s)', req.status_code, req.reason)
-    except Exception as e:
-        log.raise_error('dhparams fetching failed', cause=e)
-    return None
+            return log.error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s)', req.status_code, req.reason)
+    except requests.RequestException:
+        return log.error('dhparams fetching failed', print_exc=True)

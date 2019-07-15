@@ -157,7 +157,8 @@ class UpdateAction(Action):
                 if dhparam_size and not dhparams:
                     if self.args.fast_dhparams:
                         dhparams = fetch_dhparam(dhparam_size, self._counter)
-                    else:
+                    # gracefully degrade if fast generator not available (looks like it is down)
+                    if not dhparams:
                         dhparams = generate_dhparam(dhparam_size)
                 if ecparam_curve and not ecparams:
                     ecparams = generate_ecparam(ecparam_curve)
