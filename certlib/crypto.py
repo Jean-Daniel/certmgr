@@ -349,12 +349,12 @@ def get_ecparam_curve(ecparam_pem: bytes) -> str:
     log.raise_error("ecparam size extraction failed: %s", output.decode('ascii'))
 
 
-def fetch_dhparam(dhparam_size: int, dhparam_idx: int) -> Optional[str]:
+def fetch_dhparam(dhparam_size: int) -> Optional[str]:
     if dhparam_size not in (2048, 3072, 4096, 8192):
         return log.error("--fast-params only supports 2048, 3072, 4096 and 8192 bit param (and not %s)", dhparam_size)
-    url = f"https://2ton.com.au/dhparam/{dhparam_size}/{dhparam_idx % 128}"
+    url = f"https://2ton.com.au/getprimes/random/dhparam/{dhparam_size}"
     try:
-        log.progress('Fetching %s bit Diffie-Hellman parameters (index %s)', dhparam_size, dhparam_idx)
+        log.progress('Fetching %s bit Diffie-Hellman parameters', dhparam_size)
         req = requests.get(url)
         if req.status_code == 200:
             return req.content

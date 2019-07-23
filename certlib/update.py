@@ -70,10 +70,6 @@ class UpdateAction(Action):
         super().__init__(config, args, contexts, acme_client)
         self._done = []
         self._services = set()
-        # counter used to avoid fetching duplicated dhparam when using dhparam server.
-        # using counter in decreasing order so if a dhparam rollout occurs on the server
-        # while updating the certificates, we don't accidentally fetch 2 times the same param
-        self._counter = len(contexts)
 
     def run(self, context: CertificateContext):
         if self.args.certs:
@@ -156,9 +152,11 @@ class UpdateAction(Action):
                 # generate params if needed
                 if dhparam_size and not dhparams:
                     if self.args.fast_dhparams:
-                        dhparams = fetch_dhparam(dhparam_size, self._counter)
+                        dhparams = fetch_dhparam(dhparam_size)
                     # gracefully degrade if fast generator not available (looks like it is down)
                     if not dhparams:
+                        if self.args.fast_dhparams:
+                            log.info("fast-dhparams failed. Falling back to using classic generator")
                         dhparams = generate_dhparam(dhparam_size)
                 if ecparam_curve and not ecparams:
                     ecparams = generate_ecparam(ecparam_curve)
@@ -171,8 +169,6 @@ class UpdateAction(Action):
                 log.debug("DH and EC params updated")
             else:
                 log.debug("DH and EC up to date")
-
-            self._counter -= 1
 
     def update_ocsp(self, context: CertificateContext):
         log.info('Update OCSP Response')
