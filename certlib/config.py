@@ -254,6 +254,7 @@ class DnsAuthDef(AuthDef):
             return self._default_zone
 
         # FIXME: default to assuming all zones are simple zones (name.tld)
+        # should use public suffix list instead
         components = domain.rsplit('.', 2)
         if len(components) <= 2:
             return domain
@@ -269,6 +270,9 @@ class HookAuthDef(AuthDef):
         if not cmd:
             log.raise_error('auth: hook auth requires a command.')
         self.cmd = Hook('auth', cmd)
+        # each_domain: if true, call hook for each domain that needs auth
+        #              if false, call it once per csr with the csr common name as parameter
+        self.each_domain: bool = spec.get('each_domain', default.get('each_domain', False))
 
 
 class PrivateKeyDef:
