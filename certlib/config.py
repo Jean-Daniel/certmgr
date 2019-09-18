@@ -272,7 +272,7 @@ class HookAuthDef(AuthDef):
         self.cmd = Hook('auth', cmd)
         # each_domain: if true, call hook for each domain that needs auth
         #              if false, call it once per csr with the csr common name as parameter
-        self.each_domain: bool = spec.get('each_domain', default.get('each_domain', False))
+        self.each_domain: bool = spec.get('each_domain', default.each_domain if default else False)
 
 
 class PrivateKeyDef:
