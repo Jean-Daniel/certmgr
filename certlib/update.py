@@ -57,9 +57,6 @@ class UpdateAction(Action):
         parser.add_argument('--no-auth',
                             action='store_true', dest='no_auth', default=False,
                             help='Assume all domain names are already verified and do not perform any authorization')
-        parser.add_argument('--fast-dhparams',
-                            action='store_true', dest='fast_dhparams', default=False,
-                            help='Using 2ton.com.au online generator to get dhparams instead of generating them locally')
 
     def __init__(self, config: Configuration, args: argparse.Namespace, contexts: List[CertificateContext], acme_client: client.ClientV2):
         if not args.certs and not args.params and not args.ocsp and not args.sct:
@@ -132,6 +129,7 @@ class UpdateAction(Action):
             # Updating dhparams
             dhparams = context.dhparams
             dhparam_size = context.config.dhparam_size
+            fast_dhparams = context.config.fast_dhparams
             if dhparams:
                 if force or not dhparam_size:
                     dhparams = None
@@ -151,11 +149,11 @@ class UpdateAction(Action):
             if dhparam_size or ecparam_curve:
                 # generate params if needed
                 if dhparam_size and not dhparams:
-                    if self.args.fast_dhparams:
+                    if fast_dhparams:
                         dhparams = fetch_dhparam(dhparam_size)
                     # gracefully degrade if fast generator not available (looks like it is down)
                     if not dhparams:
-                        if self.args.fast_dhparams:
+                        if fast_dhparams:
                             log.info("fast-dhparams failed. Falling back to using classic generator")
                         dhparams = generate_dhparam(dhparam_size)
                 if ecparam_curve and not ecparams:

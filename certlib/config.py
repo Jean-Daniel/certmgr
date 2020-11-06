@@ -306,11 +306,11 @@ class PrivateKeyDef:
 
 class CertificateDef:
     SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
-                          'dhparam_size', 'ecparam_curve', 'ocsp_must_staple',
+                          'dhparam_size', 'fast_dhparams', 'ecparam_curve', 'ocsp_must_staple',
                           'ocsp_responder_urls', 'ct_submit_logs', 'file_user', 'file_group', 'auth', 'verify') + PrivateKeyDef.SUPPORTED_KEYS)
 
-    __slots__ = ('common_name', 'private_key', 'alt_names',
-                 'fileowner', 'key_types', 'services', 'dhparam_size', 'ecparam_curve',
+    __slots__ = ('common_name', 'private_key', 'alt_names', 'fileowner', 'key_types',
+                 'services', 'dhparam_size', 'fast_dhparams', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'auth', 'verify', 'no_link')
 
     def __init__(self, spec: dict, defaults, auth: Optional[AuthDef], verify: Optional[VerifyDef], ct_logs):
@@ -336,6 +336,7 @@ class CertificateDef:
             self.services = spec.get('services')
 
             self.dhparam_size = _get_int(spec, 'dhparam_size', defaults['dhparam_size'])
+            self.fast_dhparams = _get_bool(spec, 'fast_dhparams', defaults['fast_dhparams'])
             self.ecparam_curve = spec.get('ecparam_curve', defaults['ecparam_curve'])
 
             self.ocsp_must_staple = _get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
@@ -542,6 +543,7 @@ class Configuration:
             'key_curve': 'secp384r1',
             'key_passphrase': None,
             'dhparam_size': 2048,
+            'fast_dhparams': True,  # Using 2ton.com.au online generator to get dhparams instead of generating them locally
             'ecparam_curve': 'secp384r1',
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
