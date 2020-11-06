@@ -71,7 +71,7 @@ class CertificateItem:
             f.write(self.key.encode(password))
             if with_certificate:
                 f.write(b'\n')
-                self.certificate.dump(f, self.chain, self.context.dhparams, self.context.ecparams)
+                self.certificate.dump(f, self.chain, self.context.dhparam, self.context.ecparam)
         return op
 
     def _load_key(self) -> Optional[PrivateKey]:
@@ -96,7 +96,7 @@ class CertificateItem:
             return None
         op = ArchiveAndWriteOperation('certificates', cert_path, mode=0o644, owner=owner)
         with op.file() as f:
-            self.certificate.dump(f, self.chain, self.context.dhparams, self.context.ecparams, root)
+            self.certificate.dump(f, self.chain, self.context.dhparam, self.context.ecparam, root)
         return op
 
     @property
@@ -268,8 +268,8 @@ class CertificateContext:
         self.config = config
         self.data_dir = os.path.join(data_dir, config.name)
 
-        self._dhparams = _UNINITIALIZED  # type: bytes
-        self._ecparams = _UNINITIALIZED  # type: bytes
+        self._dhparam = _UNINITIALIZED  # type: bytes
+        self._ecparam = _UNINITIALIZED  # type: bytes
         self._params_updated = False
 
         pkey = config.private_key
@@ -292,16 +292,16 @@ class CertificateContext:
         return self._params_updated or any(item.updated for item in self._items)
 
     @property
-    def dhparams(self) -> Optional[bytes]:
-        if self._dhparams is _UNINITIALIZED:
+    def dhparam(self) -> Optional[bytes]:
+        if self._dhparam is _UNINITIALIZED:
             self._load_params()
-        return self._dhparams
+        return self._dhparam
 
     @property
-    def ecparams(self) -> Optional[bytes]:
-        if self._ecparams is _UNINITIALIZED:
+    def ecparam(self) -> Optional[bytes]:
+        if self._ecparam is _UNINITIALIZED:
             self._load_params()
-        return self._ecparams
+        return self._ecparam
 
     @property
     def params_path(self):
@@ -314,24 +314,24 @@ class CertificateContext:
     def save_params(self, owner: FileOwner) -> Optional[WriteOperation]:
         param_file = self.params_path
 
-        dhparams = self._dhparams
-        ecparams = self._ecparams
+        dhparam = self._dhparam
+        ecparam = self._ecparam
         op = ArchiveAndWriteOperation('certificates', param_file, mode=0o640, owner=owner)
-        if dhparams or ecparams:
+        if dhparam or ecparam:
             with op.file() as f:
-                if dhparams and ecparams:
-                    f.write(dhparams + b'\n' + ecparams)
+                if dhparam and ecparam:
+                    f.write(dhparam + b'\n' + ecparam)
                 else:
-                    f.write(dhparams or ecparams)
+                    f.write(dhparam or ecparam)
         return op
 
-    def update(self, dhparams: Optional[bytes], ecparams: Optional[bytes]):
-        if not dhparams and not ecparams:
+    def update(self, dhparam: Optional[bytes], ecparam: Optional[bytes]):
+        if not dhparam and not ecparam:
             # in case they are both None, we have to know if the params exists to properly set the update flag.
             self._load_params()
-        self._params_updated = dhparams != self._dhparams or ecparams != self._ecparams
-        self._dhparams = dhparams
-        self._ecparams = ecparams
+        self._params_updated = dhparam != self._dhparam or ecparam != self._ecparam
+        self._dhparam = dhparam
+        self._ecparam = ecparam
 
     @property
     def name(self) -> str:
@@ -361,7 +361,7 @@ class CertificateContext:
         return self._key_cipher
 
     def _load_params(self):
-        self._dhparams = self._ecparams = None
+        self._dhparam = self._ecparam = None
 
         pem_data = None
         param_file_path = self.params_path
@@ -392,8 +392,8 @@ class CertificateContext:
         ecparam_pem = (match.group(1) + b'\n') if match else None
         if dhparam_pem and not check_dhparam(dhparam_pem):
             dhparam_pem = None
-        self._dhparams = dhparam_pem
+        self._dhparam = dhparam_pem
 
         if ecparam_pem and not check_ecparam(ecparam_pem):
             ecparam_pem = None
-        self._ecparams = ecparam_pem
+        self._ecparam = ecparam_pem

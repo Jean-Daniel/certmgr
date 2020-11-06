@@ -146,40 +146,40 @@ class UpdateAction(Action):
             # Force refresh when certificates are updated
             force = self.args.force or context.updated
 
-            # Updating dhparams
-            dhparams = context.dhparams
+            # Updating dhparam
+            dhparam = context.dhparam
             dhparam_size = context.config.dhparam_size
-            fast_dhparams = context.config.fast_dhparams
-            if dhparams:
+            fast_dhparam = context.config.fast_dhparam
+            if dhparam:
                 if force or not dhparam_size:
-                    dhparams = None
-                elif dhparam_size and dhparam_size != get_dhparam_size(dhparams):
+                    dhparam = None
+                elif dhparam_size and dhparam_size != get_dhparam_size(dhparam):
                     log.debug('Diffie-Hellman parameters are not %s bits', dhparam_size)
-                    dhparams = None
+                    dhparam = None
 
-            ecparams = context.ecparams
+            ecparam = context.ecparam
             ecparam_curve = context.config.ecparam_curve
-            if ecparams:
+            if ecparam:
                 if force or not ecparam_curve:
-                    ecparams = None
-                elif ecparam_curve and ecparam_curve != get_ecparam_curve(ecparams):
+                    ecparam = None
+                elif ecparam_curve and ecparam_curve != get_ecparam_curve(ecparam):
                     log.debug('Elliptical curve parameters is not %s', ecparam_curve)
-                    ecparams = None
+                    ecparam = None
 
             if dhparam_size or ecparam_curve:
                 # generate params if needed
-                if dhparam_size and not dhparams:
-                    if fast_dhparams:
-                        dhparams = fetch_dhparam(dhparam_size)
+                if dhparam_size and not dhparam:
+                    if fast_dhparam:
+                        dhparam = fetch_dhparam(dhparam_size)
                     # gracefully degrade if fast generator not available (looks like it is down)
-                    if not dhparams:
-                        if fast_dhparams:
-                            log.info("fast-dhparams failed. Falling back to using classic generator")
-                        dhparams = generate_dhparam(dhparam_size)
-                if ecparam_curve and not ecparams:
-                    ecparams = generate_ecparam(ecparam_curve)
-                context.update(dhparams, ecparams)
-            elif context.dhparams or context.ecparams:
+                    if not dhparam:
+                        if fast_dhparam:
+                            log.info("fast-dhparam failed. Falling back to using classic generator")
+                        dhparam = generate_dhparam(dhparam_size)
+                if ecparam_curve and not ecparam:
+                    ecparam = generate_ecparam(ecparam_curve)
+                context.update(dhparam, ecparam)
+            elif context.dhparam or context.ecparam:
                 log.debug("Removing DH and EC params")
                 context.update(None, None)
 

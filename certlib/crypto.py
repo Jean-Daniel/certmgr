@@ -364,8 +364,8 @@ def fetch_dhparam(dhparam_size: int) -> Optional[str]:
         if req.status_code == 200:
             return req.content
         if 400 <= req.status_code < 500:
-            return log.error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s): "%s"', req.status_code, req.reason, req.content)
+            return log.error('Unable to fetch dhparam from 2ton.com.au (HTTP error: %s %s): "%s"', req.status_code, req.reason, req.content)
         else:
-            return log.error('Unable to fetch dhparams from 2ton.com.au (HTTP error: %s %s)', req.status_code, req.reason)
+            return log.error('Unable to fetch dhparam from 2ton.com.au (HTTP error: %s %s)', req.status_code, req.reason)
     except requests.RequestException:
-        return log.error('dhparams fetching failed', print_exc=True)
+        return log.error('dhparam fetching failed', print_exc=True)
