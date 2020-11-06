@@ -241,9 +241,12 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, targ
                             log.progress('Intermediate certificate "%s" present', intermediate.common_name, extra={'color': 'green'})
                         else:
                             log.error('Intermediate certificate "%s" mismatch', installed_intermediate.common_name)
-                if item.config.preferred_chain and not chain_has_issuer(installed_certificate, installed_certificates, item.config.preferred_chain):
-                    log.warning('preferred issuer (%s) does not match issuers "%s"',
-                                item.config.preferred_chain, installed_chain[0].issuer_common_name)
+                if item.config.preferred_chain:
+                    if not chain_has_issuer(installed_certificate, installed_certificates, item.config.preferred_chain):
+                        log.warning('preferred issuer (%s) does not match issuers "%s"',
+                                    item.config.preferred_chain, installed_chain[0].issuer_common_name)
+                    else:
+                        log.progress('Certificate matches preferred chain "%s"', item.config.preferred_chain, extra={'color': 'green'})
 
                 if ocsp_staple:
                     log.debug('verify OCSP response status')
