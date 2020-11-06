@@ -15,7 +15,7 @@ from dns.resolver import Answer
 from certlib.config import VerifyTarget
 from .config import VerifyDef
 from .context import CertificateContext, CertificateItem
-from .crypto import Certificate
+from .crypto import Certificate, chain_has_issuer
 from .logging import log
 from .ocsp import OCSP
 
@@ -241,6 +241,10 @@ def _verify_certificate_installation(item: CertificateItem, host_name: str, targ
                             log.progress('Intermediate certificate "%s" present', intermediate.common_name, extra={'color': 'green'})
                         else:
                             log.error('Intermediate certificate "%s" mismatch', installed_intermediate.common_name)
+                if item.config.preferred_chain and not chain_has_issuer(installed_certificate, installed_certificates, item.config.preferred_chain):
+                    log.warning('preferred issuer (%s) does not match issuers "%s"',
+                                item.config.preferred_chain, installed_chain[0].issuer_common_name)
+
                 if ocsp_staple:
                     log.debug('verify OCSP response status')
                     ocsp_status = ocsp_staple.cert_status

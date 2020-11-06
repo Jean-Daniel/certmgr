@@ -309,6 +309,12 @@ def save_chain(chain_file: BytesIO, chain: CertificateChain, lead_in=b''):
         lead_in = b'\n'
 
 
+def chain_has_issuer(certificate: Certificate, chain: List[Certificate], issuer_cn: str) -> bool:
+    if certificate.issuer_common_name == issuer_cn:
+        return True
+    return any(cert.issuer_common_name == issuer_cn for cert in chain)
+
+
 # ----- Params
 def generate_dhparam(dhparam_size: int) -> bytes:
     assert dhparam_size > 0

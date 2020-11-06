@@ -17,7 +17,7 @@ from .actions import Action, prune_achives, update_links
 from .auth import authorize, authorize_noop
 from .config import Configuration
 from .context import CertificateContext, CertificateItem
-from .crypto import Certificate, PrivateKey, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
+from .crypto import PrivateKey, chain_has_issuer, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
 from .logging import log
 from .ocsp import OCSP
 from .sct import SCTLog, fetch_sct
@@ -115,10 +115,10 @@ class UpdateAction(Action):
                             log.raise_error("Certificate generation failed. Missing certificate or chain in response.")
 
                         # Handle preferred chain. Try to find a match (is the default order does not match)
-                        if preferred_chain and not self.is_preferred_chain(certificate, chain, preferred_chain):
+                        if preferred_chain and not chain_has_issuer(certificate, chain, preferred_chain):
                             for altchain_pem in order.alternative_fullchains_pem:
                                 alt_cert, alt_chain = load_full_chain(altchain_pem.encode('ascii'))
-                                if self.is_preferred_chain(alt_cert, alt_chain, preferred_chain):
+                                if chain_has_issuer(alt_cert, alt_chain, preferred_chain):
                                     certificate, chain = alt_cert, alt_chain
                                     break
                             else:
@@ -129,12 +129,6 @@ class UpdateAction(Action):
                         log.raise_error('Certificate issuance failed', cause=e)
 
                     log.progress('New certificate issued')
-
-    @staticmethod
-    def is_preferred_chain(certificate: Certificate, chain: List[Certificate], preferred_chain: str) -> bool:
-        if certificate.issuer_common_name == preferred_chain:
-            return True
-        return any(cert.issuer_common_name == preferred_chain for cert in chain)
 
     def process_params(self, context: CertificateContext):
         log.info('Update DH and EC params')
