@@ -273,6 +273,7 @@ class CertificateContext:
         self._params_updated = False
 
         pkey = config.private_key
+        # one certificate item per key type
         self._items = [CertificateItem(key_type, pkey.params(key_type), self) for key_type in config.key_types]  # type: List[CertificateItem]
 
         self._key_cipher = _UNINITIALIZED  # type: Optional[KeyCipherData]

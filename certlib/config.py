@@ -305,12 +305,12 @@ class PrivateKeyDef:
 
 
 class CertificateDef:
-    SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services',
+    SUPPORTED_KEYS = set(('name', 'alt_names', 'key_types', 'services', 'preferred_chain',
                           'dhparam_size', 'fast_dhparams', 'ecparam_curve', 'ocsp_must_staple',
                           'ocsp_responder_urls', 'ct_submit_logs', 'file_user', 'file_group', 'auth', 'verify') + PrivateKeyDef.SUPPORTED_KEYS)
 
     __slots__ = ('common_name', 'private_key', 'alt_names', 'fileowner', 'key_types',
-                 'services', 'dhparam_size', 'fast_dhparams', 'ecparam_curve',
+                 'services', 'preferred_chain', 'dhparam_size', 'fast_dhparams', 'ecparam_curve',
                  'ocsp_must_staple', 'ocsp_responder_urls', 'ct_submit_logs', 'auth', 'verify', 'no_link')
 
     def __init__(self, spec: dict, defaults, auth: Optional[AuthDef], verify: Optional[VerifyDef], ct_logs):
@@ -341,6 +341,8 @@ class CertificateDef:
 
             self.ocsp_must_staple = _get_bool(spec, 'ocsp_must_staple', defaults['ocsp_must_staple'])
             self.ocsp_responder_urls = _get_list(spec, 'ocsp_responder_urls', defaults['ocsp_responder_urls'])
+
+            self.preferred_chain = spec.get('preferred_chain', defaults['preferred_chain'])
 
             self.ct_submit_logs = []
             for ct_log_name in _get_list(spec, 'ct_submit_logs', defaults['ct_submit_logs']):
@@ -548,6 +550,7 @@ class Configuration:
             'ocsp_must_staple': False,
             'ocsp_responder_urls': ['http://ocsp.int-x3.letsencrypt.org'],
             'ct_submit_logs': ['google_icarus', 'google_pilot'],
+            'preferred_chain': None,  # "DST Root CA X3"
             'verify': {
                 'targets': [443],
                 'ocsp_max_attempts': 10,

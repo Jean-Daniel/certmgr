@@ -190,6 +190,11 @@ class Certificate:
         return self._cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
 
     @property
+    def issuer_common_name(self) -> Optional[str]:
+        attr = self._cert.issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+        return attr[0].value if attr else None
+
+    @property
     def x509_certificate(self) -> x509.Certificate:
         return self._cert
 
