@@ -95,5 +95,5 @@ class DnsAuthDriver(AcmeAuthDriver):
                 log.warning('[%s.%s] DNS record cleanup failed: %s', name, zone, str(ex))
 
 
-def authorize_dns(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
-    return DnsAuthDriver(acme_client, context.config.auth).authorize(csr, hooks)
+def authorize_dns(csr: bytes, auth: DnsAuthDef, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+    return DnsAuthDriver(acme_client, auth).authorize(csr, hooks)

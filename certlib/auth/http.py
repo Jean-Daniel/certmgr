@@ -6,7 +6,6 @@ from cryptography import x509
 
 from .driver import AcmeAuthDriver
 from ..config import HttpAuthDef
-from ..context import CertificateContext
 from ..logging import log
 from ..utils import Hooks
 
@@ -66,5 +65,5 @@ class HttpAuthDriver(AcmeAuthDriver):
             os.remove(challenge_file)
 
 
-def authorize_http(csr: x509.CertificateSigningRequest, context: CertificateContext, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
-    return HttpAuthDriver(acme_client, context.config.auth).authorize(csr, hooks)
+def authorize_http(csr: bytes, auth: HttpAuthDef, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+    return HttpAuthDriver(acme_client, auth).authorize(csr, hooks)

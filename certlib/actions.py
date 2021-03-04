@@ -4,15 +4,18 @@ import datetime
 import os
 import shutil
 import stat
+from abc import ABC
 from argparse import Namespace
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import OpenSSL
 import josepy
-from acme import client
+from cryptography import x509
+from cryptography.x509 import load_pem_x509_csr
 
+from . import AcmeError, acme
 from .auth import authorize
-from .config import Configuration
+from .config import CertificateDef, Configuration
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey
 from .logging import log
@@ -20,19 +23,51 @@ from .utils import ArchiveOperation, FileOwner, Hooks, commit_file_transactions,
 from .verify import verify_certificate_installation
 
 
-class Action(metaclass=abc.ABCMeta):
-    has_acme_client = True
-
-    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client: Optional[client.ClientV2]):
+class Action(ABC):
+    def __init__(self, config: Configuration, args: Namespace):
         self.config = config
         self.args = args
-        self.acme_client = acme_client
-        assert (not self.has_acme_client) or acme_client
+
+        certs: Dict[str, str] = {}
+        self.contexts: List[CertificateContext] = []
+        for certificate_name in args.certificate_names or config.certificate_names():
+            certificates = config.certificate(certificate_name)
+            if not certificates:
+                log.warning("requested certificate '%s' does not exists in config", certificate_name)
+                continue
+            if len(certificates) > 1:
+                log.warning("[%s] ambiguous certificate alias. Use the certificate name instead.", certificate_name)
+                continue
+            cert: CertificateDef = certificates[0]
+            if cert.name in certs:
+                log.info("requesting duplicated certificate (%s and %s)", certs[cert.name], certificate_name)
+            else:
+                self.contexts.append(CertificateContext(cert, config.data_dir, config.path))
+                certs[cert.name] = certificate_name
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
         parser.add_argument('certificate_names', nargs='*')
         parser.set_defaults(cls=cls)
+
+    def execute(self) -> Tuple[List, List]:
+        if not self.contexts:
+            log.warning("nothing to process !")
+            return [], []
+
+        ok = []
+        errors = []
+        for context in self.contexts:
+            try:
+                with log.prefix(f'[{context.name}] '):
+                    self.run(context)
+                ok.append(context.name)
+            except AcmeError as e:
+                log.error("[%s] processing failed. No files updated: %s", context.name, str(e), print_exc=True)
+                errors.append(context.name)
+
+        self.finalize()
+        return ok, errors
 
     @abc.abstractmethod
     def run(self, context: CertificateContext):
@@ -40,6 +75,17 @@ class Action(metaclass=abc.ABCMeta):
 
     def finalize(self):
         pass
+
+
+class AcmeActionMixin:
+
+    def __init__(self, config: Configuration, args: Namespace):
+        super().__init__(config, args)
+        account_dir = config.account_dir
+        archive_dir = config.archive_dir('client')
+        with log.prefix('[acme] '):
+            self.acme_client = acme.connect_client(account_dir, config.account['email'], config.get('acme_directory_url'),
+                                                   config.account.get('passphrase'), archive_dir)
 
 
 def _process_symlink(root: str, name: str, target: str, link: str):
@@ -89,10 +135,9 @@ def update_links(root: str, context: CertificateContext):
 
 
 class CheckAction(Action):
-    has_acme_client = False
 
-    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client=None):
-        super().__init__(config, args, contexts, acme_client)
+    def __init__(self, config: Configuration, args: Namespace):
+        super().__init__(config, args)
         self._checked = dict()
 
     @staticmethod
@@ -184,7 +229,6 @@ def prune_achives(archive_dir: Optional[str], days: int):
 
 
 class PruneAction(Action):
-    has_acme_client = False
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
@@ -193,8 +237,8 @@ class PruneAction(Action):
                             type=int, dest='days', default=-1,
                             help='use to override archive_days config')
 
-    def __init__(self, config: Configuration, args: Namespace, contexts: List[CertificateContext], acme_client=None):
-        super().__init__(config, args, contexts, acme_client)
+    def __init__(self, config: Configuration, args: Namespace):
+        super().__init__(config, args)
         self.days = self.args.days
         if self.days < 0:
             self.days = self.config.int('archive_days')
@@ -206,7 +250,7 @@ class PruneAction(Action):
         prune_achives(os.path.join(self.config.data_dir, 'archives', 'account'), self.days)
 
 
-class RevokeAction(Action):
+class RevokeAction(AcmeActionMixin, Action):
 
     def run(self, context: CertificateContext):
         log.info("Revoking Certificates")
@@ -245,21 +289,49 @@ class RevokeAction(Action):
             commit_file_transactions(ops, self.config.archive_dir(context.name))
 
 
-class AuthAction(Action):
+class AuthAction(AcmeActionMixin, Action):
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser):
+        super().add_arguments(parser)
+        parser.add_argument("--csr", help="PEM certificate request", type=str, required=False)
+
+    def execute(self) -> Tuple[List, List]:
+        ok = []
+        errors = []
+        # do not process certificates from the config if csr was defined and
+        # no explicit certificate_names was requested. In such case, self.contexts default
+        # to all declared certificates
+        if not (self.args.csr and not self.args.certificate_names) and self.contexts:
+            ok, error = super().execute()
+
+        # process raw input
+        if self.args.csr:
+            try:
+                csr: x509.CertificateSigningRequest = load_pem_x509_csr(self.args.csr.encode())
+                with log.prefix(f'[CSR] '):
+                    order = authorize(csr, self.config.auth, self.acme_client, Hooks(self.config.hooks))
+                    order.update(csr_pem=None)
+                ok.append("CSR")
+            except AcmeError as e:
+                log.error("[CSR] processing failed. No files updated: %s", str(e), print_exc=True)
+                errors.append("CSR")
+        return ok, errors
+
     def run(self, context: CertificateContext):
         log.info("Process Authorization")
 
+        cert = context.config
         with log.prefix("  - "):
             # until acme provide a clean way to create an order without using a CSR, we just create a dummy CSR …
-            key = PrivateKey.create('rsa', 2048)
-            csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
+            key = PrivateKey.create("ecdsa", "secp256r1")
+            csr = key.create_csr(cert.common_name, cert.alt_names)
             # … and remove it from the order afterward
-            order = authorize(csr, context, self.acme_client, Hooks(self.config.hooks))
+            order = authorize(csr, cert.auth, self.acme_client, Hooks(self.config.hooks))
             order.update(csr_pem=None)
 
 
 class VerifyAction(Action):
-    has_acme_client = False
 
     def run(self, context: CertificateContext):
         log.info("Verify certificates")

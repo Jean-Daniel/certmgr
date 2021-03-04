@@ -3,7 +3,7 @@ import datetime
 import time
 from typing import Dict, List, NamedTuple, Optional, Type
 
-from acme import challenges, client, messages
+from acme import client, messages
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
@@ -16,11 +16,11 @@ class AuthDriver:
     def __init__(self, acme_client: client.ClientV2):
         self.acme_client = acme_client
 
-    def authorize(self, csr: x509.CertificateSigningRequest, hooks: Hooks) -> messages.OrderResource:
+    def authorize(self, csr: bytes, hooks: Hooks) -> messages.OrderResource:
         valid_authzr: List[messages.AuthorizationResource] = []
         pending_authzr: List[messages.AuthorizationResource] = []
 
-        order: messages.OrderResource = self.acme_client.new_order(csr.public_bytes(serialization.Encoding.PEM))
+        order: messages.OrderResource = self.acme_client.new_order(csr)
         # collect pending auth resources
         for authzr in order.authorizations:  # type: messages.AuthorizationResource
             domain_name = authzr.body.identifier.value

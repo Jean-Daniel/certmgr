@@ -508,13 +508,14 @@ class Configuration:
                     pass
                 else:
                     log.warning('unknown section name: "%s"', section)
+            # merging done -> parse auth spec
+            cfg.auth = AuthDef.parse(cfg.settings['auth'])
 
-            auth = AuthDef.parse(cfg.settings['auth'])
             verify = VerifyDef(cfg.settings['verify'])
             certificates = data.get('certificates')
             if not certificates:
                 log.raise_error('section "certificates" is required and must not be empty.')
-            cfg._parse_certificates(certificates, auth, verify, sct_logs)
+            cfg._parse_certificates(certificates, verify, sct_logs)
 
         return cfg
 
@@ -559,7 +560,6 @@ class Configuration:
 
             'lock_file': '/var/run/lock/certmgr.lock',
         }
-
         self.services = {
             'apache': 'systemctl reload apache2',
             'coturn': 'systemctl restart coturn',
@@ -575,6 +575,9 @@ class Configuration:
             'znc': 'systemctl restart znc'
         }
 
+        # _load() must init it
+        # noinspection PyTypeChecker
+        self.auth: AuthDef = None
         self._certificates = OrderedDict()  # type: Dict[str, CertificateDef]
 
     def get(self, item: str, default=None):
@@ -622,12 +625,12 @@ class Configuration:
         date = datetime.datetime.now().strftime('%Y_%m_%d_%H%M%S')
         return os.path.join(archive, name, date)
 
-    def _parse_certificates(self, certificates: List[dict], auth: AuthDef, verify: Optional[VerifyDef], sct_logs: dict):
+    def _parse_certificates(self, certificates: List[dict], verify: Optional[VerifyDef], sct_logs: dict):
         common_names = set()
         alt_names = {}
         for certificate_spec in certificates:
             assert isinstance(certificate_spec, dict), "'certificates' must be a list of objects"
-            cert = CertificateDef(certificate_spec, self.settings, auth, verify, sct_logs)
+            cert = CertificateDef(certificate_spec, self.settings, self.auth, verify, sct_logs)
             if cert.common_name in common_names:
                 log.raise_error("duplicated common name in certificates definition: %s", cert.common_name)
             common_names.add(cert.common_name)

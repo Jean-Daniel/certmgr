@@ -13,5 +13,5 @@ class NoopAuthDriver(AuthDriver):
         log.raise_error('Some domains requires auth but auth is disabled')
 
 
-def authorize_noop(csr: x509.CertificateSigningRequest, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
+def authorize_noop(csr: bytes, acme_client: client.ClientV2, hooks: Hooks) -> messages.OrderResource:
     return NoopAuthDriver(acme_client).authorize(csr, hooks)

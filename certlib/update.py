@@ -5,17 +5,15 @@ import json
 import os
 import subprocess
 import time
-from typing import List
 
-from acme import client
 from asn1crypto import ocsp
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 from . import AcmeError
-from .actions import Action, prune_achives, update_links
-from .auth import authorize, authorize_noop
-from .config import Configuration
+from .actions import AcmeActionMixin, Action, prune_achives, update_links
+from .auth import authorize
+from .config import Configuration, NoAuthDef
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey, chain_has_issuer, fetch_dhparam, generate_dhparam, generate_ecparam, get_dhparam_size, get_ecparam_curve, load_full_chain
 from .logging import log
@@ -29,7 +27,7 @@ def _sct_datetime(sct_timestamp):
     return datetime.datetime.utcfromtimestamp(sct_timestamp / 1000)
 
 
-class UpdateAction(Action):
+class UpdateAction(AcmeActionMixin, Action):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
@@ -58,13 +56,13 @@ class UpdateAction(Action):
                             action='store_true', dest='no_auth', default=False,
                             help='Assume all domain names are already verified and do not perform any authorization')
 
-    def __init__(self, config: Configuration, args: argparse.Namespace, contexts: List[CertificateContext], acme_client: client.ClientV2):
+    def __init__(self, config: Configuration, args: argparse.Namespace):
         if not args.certs and not args.params and not args.ocsp and not args.sct:
             args.certs = True
             args.params = True
             args.ocsp = True
             args.sct = True
-        super().__init__(config, args, contexts, acme_client)
+        super().__init__(config, args)
         self._done = []
         self._services = set()
 
@@ -100,10 +98,8 @@ class UpdateAction(Action):
 
                     log.debug('Requesting certificate for "%s" with alt names: "%s"', context.common_name, ', '.join(context.alt_names))
                     csr = key.create_csr(context.common_name, context.alt_names, context.config.ocsp_must_staple)
-                    if self.args.no_auth:
-                        order = authorize_noop(csr, self.acme_client, Hooks(self.config.hooks))
-                    else:
-                        order = authorize(csr, context, self.acme_client, Hooks(self.config.hooks))
+                    auth = NoAuthDef() if self.args.no_auth else context.config.auth
+                    order = authorize(csr, auth, self.acme_client, Hooks(self.config.hooks))
 
                     preferred_chain = context.config.preferred_chain
                     try:

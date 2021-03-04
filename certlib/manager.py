@@ -8,11 +8,9 @@ import sys
 import time
 from typing import List, Tuple
 
-from acme import client
-
-from . import AcmeError, VERSION, acme, actions
+from . import AcmeError, VERSION, actions
+from .actions import Action
 from .config import Configuration
-from .context import CertificateContext
 from .logging import PROGRESS, log
 from .update import UpdateAction
 
@@ -91,53 +89,9 @@ class AcmeManager:
         if not self.args.no_color:
             log.color = self.config.bool('color_output')
 
-    def connect_client(self) -> client.ClientV2:
-        account_dir = self.config.account_dir
-        archive_dir = self.config.archive_dir('client')
-        with log.prefix('[acme] '):
-            return acme.connect_client(account_dir, self.config.account['email'], self.config.get('acme_directory_url'),
-                                       self.config.account.get('passphrase'), archive_dir)
-
-    def _run(self):
-        certs = {}
-        contexts = []
-        for certificate_name in self.args.certificate_names or self.config.certificate_names():
-            cert = self.config.certificate(certificate_name)
-            if not cert:
-                log.warning("requested certificate '%s' does not exists in config", certificate_name)
-                continue
-            if len(cert) > 1:
-                log.warning("[%s] ambiguous certificate alias. Use the certificate name instead.", certificate_name)
-                continue
-            cert = cert[0]
-            if cert.name in certs:
-                log.info("requesting duplicated certificate (%s and %s)", certs[cert.name], certificate_name)
-            else:
-                contexts.append(CertificateContext(cert, self.config.data_dir, self.config.path))
-                certs[cert.name] = certificate_name
-
-        if not contexts:
-            log.warning("nothing to process !")
-            return (), ()
-
-        ok = []
-        errors = []
-        acme_client = None
-        cls = self.args.cls
-        if cls.has_acme_client:
-            acme_client = self.connect_client()
-        action = cls(self.config, self.args, contexts, acme_client)
-        for context in contexts:
-            try:
-                with log.prefix(f'[{context.name}] '):
-                    action.run(context)
-                ok.append(context.name)
-            except AcmeError as e:
-                log.error("[%s] processing failed. No files updated: %s", context.name, str(e), print_exc=True)
-                errors.append(context.name)
-
-        action.finalize()
-        return ok, errors
+    def _run(self) -> Tuple[List, List]:
+        action: Action = self.args.cls(self.config, self.args)
+        return action.execute()
 
     def run(self) -> Tuple[List, List]:
         lock_path = self.config.get('lock_file')
