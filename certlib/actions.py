@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Tuple
 
 import OpenSSL
 import josepy
-from cryptography import x509
 from cryptography.x509 import load_pem_x509_csr
 
 from . import AcmeError, acme
@@ -28,8 +27,17 @@ class Action(ABC):
         self.config = config
         self.args = args
 
-        certs: Dict[str, str] = {}
-        self.contexts: List[CertificateContext] = []
+        self.contexts: List[CertificateContext] = self.parse_arguments(config, args)
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser):
+        parser.add_argument('certificate_names', nargs='*')
+        parser.set_defaults(cls=cls)
+
+    @classmethod
+    def parse_arguments(cls, config: Configuration, args: Namespace) -> List[CertificateContext]:
+        certs = {}
+        contexts = []
         for certificate_name in args.certificate_names or config.certificate_names():
             certificates = config.certificate(certificate_name)
             if not certificates:
@@ -38,17 +46,14 @@ class Action(ABC):
             if len(certificates) > 1:
                 log.warning("[%s] ambiguous certificate alias. Use the certificate name instead.", certificate_name)
                 continue
-            cert: CertificateDef = certificates[0]
+            cert = certificates[0]
             if cert.name in certs:
                 log.info("requesting duplicated certificate (%s and %s)", certs[cert.name], certificate_name)
             else:
-                self.contexts.append(CertificateContext(cert, config.data_dir, config.path))
+                contexts.append(CertificateContext(cert, config.data_dir, config.path))
                 certs[cert.name] = certificate_name
 
-    @classmethod
-    def add_arguments(cls, parser: argparse.ArgumentParser):
-        parser.add_argument('certificate_names', nargs='*')
-        parser.set_defaults(cls=cls)
+        return contexts
 
     def execute(self) -> Tuple[List, List]:
         if not self.contexts:
@@ -294,22 +299,29 @@ class AuthAction(AcmeActionMixin, Action):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
         super().add_arguments(parser)
-        parser.add_argument("--csr", help="PEM certificate request", type=str, required=False)
+        parser.add_argument('--csr',
+                            action='store_true', default=False,
+                            help='interpret positional arguments as CSR instead of certificate names')
+
+    @classmethod
+    def parse_arguments(cls, config: Configuration, args: Namespace) -> List[CertificateContext]:
+        if not args.csr:
+            return super().parse_arguments(config, args)
+
+        # This is CSR -> parse them
+        return []
 
     def execute(self) -> Tuple[List, List]:
+        if not self.args.csr:
+            return super().execute()
+
         ok = []
         errors = []
-        # do not process certificates from the config if csr was defined and
-        # no explicit certificate_names was requested. In such case, self.contexts default
-        # to all declared certificates
-        if not (self.args.csr and not self.args.certificate_names) and self.contexts:
-            ok, error = super().execute()
-
         # process raw input
-        if self.args.csr:
+        for raw in self.args.certificate_names:  # type: str
             try:
-                csr: x509.CertificateSigningRequest = load_pem_x509_csr(self.args.csr.encode())
-                with log.prefix(f'[CSR] '):
+                csr = load_pem_x509_csr(raw.encode())
+                with log.prefix('[CSR] '):
                     order = authorize(csr, self.config.auth, self.acme_client, Hooks(self.config.hooks))
                     order.update(csr_pem=None)
                 ok.append("CSR")

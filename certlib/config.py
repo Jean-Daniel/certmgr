@@ -577,7 +577,7 @@ class Configuration:
 
         # _load() must init it
         # noinspection PyTypeChecker
-        self.auth: AuthDef = None
+        self.auth = None  # type: AuthDef
         self._certificates = OrderedDict()  # type: Dict[str, CertificateDef]
 
     def get(self, item: str, default=None):

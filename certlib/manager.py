@@ -90,7 +90,7 @@ class AcmeManager:
             log.color = self.config.bool('color_output')
 
     def _run(self) -> Tuple[List, List]:
-        action: Action = self.args.cls(self.config, self.args)
+        action = self.args.cls(self.config, self.args)  # type: Action
         return action.execute()
 
     def run(self) -> Tuple[List, List]:
