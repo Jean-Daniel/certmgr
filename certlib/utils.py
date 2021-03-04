@@ -200,17 +200,19 @@ def commit_file_transactions(operations: Iterable[Operation], archive_dir: Optio
 
 # ======= Hooks Management
 class Hook:
-    __slots__ = ('name', 'args', 'cwd', 'timeout')
+    __slots__ = ('name', 'args', 'cwd', 'input', 'timeout')
 
     def __init__(self, name, spec):
         self.name = name
         self.cwd = None
+        self.input = None
         self.timeout = None
         if isinstance(spec, str):
             self.args = shlex.split(spec)
         elif isinstance(spec, dict):
             self.args = spec.get('args')
             self.cwd = spec.get('cwd')
+            self.input = spec.get('input')  # type: str
             self.timeout = spec.get('timeout', None)
             # TODO: add support for env, …
         else:
@@ -223,9 +225,15 @@ class Hook:
         args = None
         try:
             args = [arg.format(**kwargs) for arg in self.args]
+            stdin = None
+            if self.input:
+                stdin = self.input.format(**kwargs).encode()
+
             log.progress('Calling hook %s: %s', self.name, args)
             # TODO: add support for env, …
-            output = subprocess.check_output(args, cwd=self.cwd, stderr=subprocess.STDOUT, shell=False, timeout=self.timeout)
+            output = subprocess.run(args, cwd=self.cwd, input=stdin,
+                                    shell=False, check=True, timeout=self.timeout,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
             if output:
                 try:
                     output = output.decode('utf-8')

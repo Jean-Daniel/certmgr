@@ -4,8 +4,10 @@ import datetime
 import os
 import shutil
 import stat
+import sys
 from abc import ABC
 from argparse import Namespace
+from os import read
 from typing import Dict, List, Optional, Tuple
 
 import OpenSSL
@@ -318,16 +320,16 @@ class AuthAction(AcmeActionMixin, Action):
         ok = []
         errors = []
         # process raw input
-        for raw in self.args.certificate_names:  # type: str
-            try:
-                csr = load_pem_x509_csr(raw.encode())
-                with log.prefix('[CSR] '):
-                    order = authorize(csr, self.config.auth, self.acme_client, Hooks(self.config.hooks))
-                    order.update(csr_pem=None)
-                ok.append("CSR")
-            except AcmeError as e:
-                log.error("[CSR] processing failed. No files updated: %s", str(e), print_exc=True)
-                errors.append("CSR")
+        try:
+            raw = sys.stdin.buffer.read()
+            csr = load_pem_x509_csr(raw)
+            with log.prefix('[CSR] '):
+                order = authorize(csr, self.config.auth, self.acme_client, Hooks(self.config.hooks))
+                order.update(csr_pem=None)
+            ok.append("CSR")
+        except AcmeError as e:
+            log.error("[CSR] processing failed. No files updated: %s", str(e), print_exc=True)
+            errors.append("CSR")
         return ok, errors
 
     def run(self, context: CertificateContext):

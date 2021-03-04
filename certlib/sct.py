@@ -10,7 +10,7 @@ from .logging import log
 
 class SCTLog(NamedTuple):
     name: str
-    id: int
+    id: bytes
     url: str
 
 
