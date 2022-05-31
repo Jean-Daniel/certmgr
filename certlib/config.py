@@ -1,14 +1,14 @@
 import base64
-import collections
 import datetime
 import grp
 import json
 import logging
 import os
 import pwd
-from collections import OrderedDict
 from enum import Enum
 from typing import Container, Dict, Iterable, List, Optional, Tuple, Union
+
+import yaml
 
 from . import AcmeError
 from .logging import PROGRESS, log
@@ -30,7 +30,7 @@ def _get_bool(config: dict, key: str, default: bool = False) -> bool:
 
 def _get_list(config: dict, key: str, default: Optional[Iterable] = None) -> Iterable:
     value = config.get(key, default)
-    return value if (isinstance(value, collections.Iterable) and not isinstance(value, str)) else [] if (
+    return value if (isinstance(value, Iterable) and not isinstance(value, str)) else [] if (
             value is None) else [value]
 
 
@@ -476,8 +476,11 @@ class Configuration:
     @classmethod
     def _load(cls, file_path: str) -> 'Configuration':
         cfg = cls(file_path)
-        with open(cfg.path, 'rt', encoding='utf-8') as config_file, log.prefix("[config] "):
-            data = json.load(config_file, object_pairs_hook=collections.OrderedDict)
+        with open(cfg.path, 'rb') as config_file, log.prefix("[config] "):
+            if cfg.path.endswith("json"):
+                data = json.load(config_file)
+            else:
+                data = yaml.load(config_file)
 
             # configure log first, so configuration loading errors are properly logged.
             values = data.get('settings')
@@ -578,7 +581,7 @@ class Configuration:
         # _load() must init it
         # noinspection PyTypeChecker
         self.auth = None  # type: AuthDef
-        self._certificates = OrderedDict()  # type: Dict[str, CertificateDef]
+        self._certificates = {}  # type: Dict[str, CertificateDef]
 
     def get(self, item: str, default=None):
         return self.settings.get(item, default)

@@ -13,6 +13,7 @@
     "key_curve": "secp384r1",
     "key_passphrase": null,
     "dhparam_size": 2048,
+    "fast_dhparams": true,
     "ecparam_curve": "secp384r1",
     "file_user": "root",
     "file_group": "ssl-cert",

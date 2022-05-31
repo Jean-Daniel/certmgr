@@ -1,8 +1,9 @@
 acme>=0.22.0
+pyaml
 josepy
 pyOpenSSL
 
 requests
 dnspython
-asn1crypto>=0.24.0
+asn1crypto>=1.0.0
 cryptography>=2.1.4

@@ -2,7 +2,6 @@
 import hashlib
 import socket
 import time
-from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 import OpenSSL
@@ -155,7 +154,7 @@ def _validate_chain(chain: List[Certificate]) -> List[Certificate]:
     if len(chain) == 1:
         return chain
 
-    sanitized = OrderedDict()
+    sanitized = {}
     for cert in chain:
         if cert in sanitized:
             log.warning("certificate chain contains duplicated certificate")
