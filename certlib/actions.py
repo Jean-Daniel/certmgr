@@ -151,6 +151,7 @@ class CheckAction(Action):
     def _check(file: str, mode: int, owner: FileOwner):
         try:
             s = os.stat(file, follow_symlinks=False)
+            log.debug('checking path %s', file)
             if stat.S_IMODE(s.st_mode) != mode:
                 log.progress('file permission should be %s not %s', oct(mode), oct(stat.S_IMODE(s.st_mode)))
                 os.chmod(file, mode)
@@ -160,6 +161,7 @@ class CheckAction(Action):
                              file, owner.uid, owner.gid, s.st_uid, s.st_gid)
                 os.chown(file, owner.uid, owner.gid)
         except FileNotFoundError:
+            log.debug('skipping non existing path %s', file)
             pass
 
     def _check_file(self, file: str, mode: int, owner: FileOwner):
