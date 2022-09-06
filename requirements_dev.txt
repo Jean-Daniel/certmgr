@@ -6,4 +6,4 @@ pyOpenSSL
 requests
 dnspython
 asn1crypto>=1.0.0
-cryptography<=35.0.0
+cryptography
