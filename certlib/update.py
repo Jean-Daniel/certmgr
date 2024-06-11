@@ -110,7 +110,7 @@ class UpdateAction(AcmeActionMixin, Action):
                         if not certificate or not chain:
                             log.raise_error("Certificate generation failed. Missing certificate or chain in response.")
 
-                        # Handle preferred chain. Try to find a match (is the default order does not match)
+                        # Handle preferred chain. Try to find a match (if the default order does not match)
                         if preferred_chain and not chain_has_issuer(certificate, chain, preferred_chain):
                             for altchain_pem in order.alternative_fullchains_pem:
                                 alt_cert, alt_chain = load_full_chain(altchain_pem.encode('ascii'))

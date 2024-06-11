@@ -1,6 +1,8 @@
 # SCT Support
 import base64
-from typing import List, NamedTuple, Optional
+import datetime
+import typing as t
+import urllib.parse
 
 import requests
 
@@ -8,25 +10,39 @@ from .crypto import Certificate
 from .logging import log
 
 
-class SCTLog(NamedTuple):
-    name: str
-    id: bytes
+class SCTLogEntry(t.NamedTuple):
     url: str
+    id: bytes
+    key: bytes
+    start: datetime.datetime
+    end: datetime.datetime
 
 
-class SCTData(NamedTuple):
+class SCTLog(t.NamedTuple):
+    name: str
+    entries: t.List[SCTLogEntry]
+
+    def url(self, certificate: Certificate):
+        not_after = certificate.not_after
+        for entry in self.entries:
+            if (entry.start <= not_after) and (not_after < entry.end):
+                return entry.url
+        return None
+
+
+class SCTData(t.NamedTuple):
     version: int
     id: bytes
     timestamp: int
     extensions: bytes
-    signature: Optional[bytes]
+    signature: t.Optional[bytes]
 
 
-def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: List[Certificate]) -> SCTData:
+def fetch_sct(ct_log: SCTLog, certificate: Certificate, chain: t.List[Certificate]) -> SCTData:
     certificates = ([base64.b64encode(certificate.encode(pem=False)).decode('ascii')]
                     + [base64.b64encode(chain_certificate.encode(pem=False)).decode('ascii') for chain_certificate in chain])
 
-    req = requests.post(ct_log.url + '/ct/v1/add-chain', json={'chain': certificates})
+    req = requests.post(urllib.parse.urljoin(ct_log.url(certificate), '/ct/v1/add-chain'), json={'chain': certificates})
     try:
         if req.status_code == 200:
             sct = req.json()

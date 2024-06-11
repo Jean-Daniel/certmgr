@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import importlib.metadata
 # Certificate manager using ACME protocol
 #
 # To install on Debian:
@@ -14,7 +14,6 @@ from certlib.manager import AcmeManager
 
 def verify_requirements():
     import os
-    import pkg_resources
     import re
     requirements_file_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'requirements.txt')
     if os.path.exists(requirements_file_path):
@@ -27,7 +26,7 @@ def verify_requirements():
                 if requirement:
                     package, comparison, version = (re.split(r'\s?(<?>?==?)\s?', requirement) + ['', ''])[:3]
                     try:
-                        installed_version = pkg_resources.get_distribution(package).version
+                        installed_version = importlib.metadata.version(package)
                         if '<=' == comparison:
                             if installed_version > version:
                                 print('Package', package, 'is more recent than', version)

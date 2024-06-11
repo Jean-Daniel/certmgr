@@ -179,11 +179,11 @@ class Certificate:
 
     @property
     def not_before(self) -> datetime:
-        return self._cert.not_valid_before
+        return self._cert.not_valid_before_utc
 
     @property
     def not_after(self) -> datetime:
-        return self._cert.not_valid_after
+        return self._cert.not_valid_after_utc
 
     @property
     def common_name(self) -> str:

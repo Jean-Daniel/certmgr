@@ -2,6 +2,7 @@ import datetime
 import os
 import re
 import struct
+import typing
 from typing import List, Optional, Tuple
 
 from .config import CertificateDef
@@ -11,7 +12,7 @@ from .ocsp import OCSP
 from .sct import SCTData, SCTLog
 from .utils import ArchiveAndWriteOperation, FileOwner, KeyCipherData, WriteOperation, get_key_cipher
 
-_UNINITIALIZED = 'uninitialized'
+_UNINITIALIZED: typing.Any = 'uninitialized'
 
 
 class CertificateItem:
@@ -171,7 +172,7 @@ class CertificateItem:
             log.info('certificate %s ocsp_must_staple option', 'has' if certificate.has_oscp_must_staple else 'does not have')
             return True
 
-        valid_duration = (certificate.not_after - datetime.datetime.utcnow())
+        valid_duration = (certificate.not_after - datetime.datetime.now(datetime.timezone.utc))
         if valid_duration.days < 0:
             log.info('certificate has expired')
             return True
@@ -249,8 +250,9 @@ class CertificateItem:
                 extensions = sct[43:(43 + extensions_len)] if extensions_len else b''
                 signature = sct[43 + extensions_len:]
 
-                if ct_log.id == logid:
-                    return SCTData(version, logid, timestamp, extensions, signature)
+                for entry in ct_log.entries:
+                    if entry.id == logid:
+                        return SCTData(version, logid, timestamp, extensions, signature)
                 else:
                     log.debug('SCT "%s" does not match log id for "%s"', sct_file_path, ct_log.name)
         except FileNotFoundError:

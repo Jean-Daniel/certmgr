@@ -6,11 +6,9 @@ import dns.tsigkeyring
 import dns.update
 from acme import client, messages
 from acme.challenges import DNS01
-from cryptography import x509
 
 from .driver import AcmeAuthDriver
 from ..config import DnsAuthDef, TsigKey
-from ..context import CertificateContext
 from ..logging import log
 from ..utils import Hooks
 

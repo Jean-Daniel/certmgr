@@ -1,3 +1,4 @@
+import importlib.metadata
 import json
 import os
 import sys
@@ -6,7 +7,6 @@ from typing import Optional
 from urllib import parse
 
 import josepy
-import pkg_resources
 from acme import client, messages
 
 from . import VERSION
@@ -16,8 +16,8 @@ from .utils import (ArchiveAndWriteOperation, ArchiveOperation, WriteOperation, 
 
 
 def _user_agent():
-    acmelib = pkg_resources.get_distribution('acme')
-    return f'certmgr/{VERSION} acme-python/{acmelib.version if acmelib else "0.0.0"}'
+    acmelib = importlib.metadata.version('acme')
+    return f'certmgr/{VERSION} acme-python/{acmelib or "0.0.0"}'
 
 
 class _PasswordProvider:

@@ -1,7 +1,6 @@
 from typing import List
 
 from acme import client, messages
-from cryptography import x509
 
 from .driver import AuthDriver
 from ..logging import log

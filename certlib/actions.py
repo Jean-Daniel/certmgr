@@ -7,8 +7,7 @@ import stat
 import sys
 from abc import ABC
 from argparse import Namespace
-from os import read
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import OpenSSL
 import josepy
@@ -16,7 +15,7 @@ from cryptography.x509 import load_pem_x509_csr
 
 from . import AcmeError, acme
 from .auth import authorize
-from .config import CertificateDef, Configuration
+from .config import Configuration
 from .context import CertificateContext, CertificateItem
 from .crypto import PrivateKey
 from .logging import log

@@ -4,6 +4,7 @@ from acme import client, messages
 
 from .driver import AuthDriver
 from ..config import HookAuthDef
+from ..logging import log
 from ..utils import Hooks
 
 
@@ -19,9 +20,11 @@ class HookAuthDriver(AuthDriver):
             for authzr in authzrs:
                 domain_name = authzr.body.identifier.value
                 # TODO: tweak argument list
-                self.auth.cmd.execute(common_name=domain_name)
+                if not self.auth.cmd.execute(common_name=domain_name):
+                    log.raise_error('authentification hook failed for domain %s', domain_name)
         else:
-            self.auth.cmd.execute(csr=self.csr.decode())
+            if not self.auth.cmd.execute(csr=self.csr.decode()):
+                log.raise_error('authentification hook failed for domains %s', [authzr.body.identifier.value for authzr in authzrs])
         return authzrs  # FIXME: should update authzrs
 
 

@@ -1,12 +1,12 @@
-acme==1.29.0
-pyaml==21.10.1
-josepy==1.13.0
-pyOpenSSL==22.0.0
+acme==2.11.0
+pyaml==24.4.0
+josepy==1.14.0
+pyOpenSSL==24.1.0
 
-requests==2.28.1
-dnspython==2.2.1
+requests==2.32.3
+dnspython==2.6.1
 asn1crypto==1.5.1
-cryptography==37.0.4
+cryptography==42.0.8
 ## The following requirements were added by pip freeze:
 certifi==2022.6.15
 cffi==1.15.1

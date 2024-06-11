@@ -4,8 +4,6 @@ import time
 from typing import Dict, List, NamedTuple, Optional, Type
 
 from acme import client, messages
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
 
 from ..logging import log
 from ..utils import Hooks
