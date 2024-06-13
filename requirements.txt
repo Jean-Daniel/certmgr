@@ -8,12 +8,13 @@ dnspython==2.6.1
 asn1crypto==1.5.1
 cryptography==42.0.8
 ## The following requirements were added by pip freeze:
-certifi==2022.6.15
-cffi==1.15.1
-charset-normalizer==2.1.1
-idna==3.3
-pycparser==2.21
+certifi==2024.6.2
+cffi==1.16.0
+charset-normalizer==3.3.2
+idna==3.7
+pycparser==2.22
 pyRFC3339==1.1
-pytz==2022.2.1
-requests-toolbelt==0.9.1
-urllib3==1.26.12
+pytz==2024.1
+setuptools==70.0.0
+urllib3==2.2.1
+wheel==0.43.0
