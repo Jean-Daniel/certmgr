@@ -705,7 +705,7 @@ class Configuration:
             if cfg.path.endswith("json"):
                 data = json.load(config_file)
             else:
-                data = yaml.load(config_file)
+                data = yaml.load(config_file, yaml.SafeLoader)
 
             # configure log first, so configuration loading errors are properly logged.
             values = data.get('settings')
