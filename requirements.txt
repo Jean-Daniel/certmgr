@@ -1,12 +1,12 @@
 acme==2.11.0
-PyYAML==6.0.1
+PyYAML==6.0.2
 josepy==1.14.0
-pyOpenSSL==24.1.0
+pyOpenSSL==24.2.1
 
 requests==2.32.3
 dnspython==2.6.1
 asn1crypto==1.5.1
-cryptography==42.0.8
+cryptography==43.0.0
 ## The following requirements were added by pip freeze:
 certifi==2024.6.2
 cffi==1.16.0
@@ -15,6 +15,4 @@ idna==3.7
 pycparser==2.22
 pyRFC3339==1.1
 pytz==2024.1
-setuptools==70.0.0
 urllib3==2.2.1
-wheel==0.43.0

@@ -17,14 +17,10 @@ from .logging import log
 
 C = TypeVar('C', bound=ec.EllipticCurve, covariant=True)
 
-__supported_curves = None
 
-
-def _supported_curves() -> Dict[str, Type[C]]:
-    global __supported_curves
-    if __supported_curves is None:
-        __supported_curves = {cls.name: cls for _, cls in ec.__dict__.items() if isinstance(cls, type) and cls is not ec.EllipticCurve and issubclass(cls, ec.EllipticCurve)}
-    return __supported_curves
+def _supported_curves() -> Dict[str, C]:
+    # noinspection PyProtectedMember
+    return ec._CURVE_TYPES
 
 
 class PrivateKey(metaclass=abc.ABCMeta):
