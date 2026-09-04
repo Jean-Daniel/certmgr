@@ -1,9 +1,0 @@
-acme
-PyYAML
-josepy
-pyOpenSSL
-
-requests
-dnspython
-asn1crypto>=1.0.0
-cryptography
